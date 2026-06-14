@@ -38,7 +38,7 @@ export default function HeroCarousel({ animeList }) {
               src={anime.bannerImage || anime.coverImage.extraLarge}
               alt={anime.title.english || anime.title.romaji}
               fill
-              preload={idx === 0}
+              priority={idx === 0}
               style={{ objectFit: "cover", objectPosition: "center 20%" }}
             />
             <div

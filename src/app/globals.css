@@ -362,11 +362,23 @@ a {
   margin-top: 2px;
 }
 @media (max-width: 768px) {
+  .search-wrapper {
+    width: 220px;
+  }
+}
+@media (max-width: 640px) {
+  .navbar-container {
+    flex-wrap: wrap;
+    gap: 12px;
+  }
   .nav-menu {
-    display: none;
+    display: flex;
+    gap: 16px;
   }
   .search-wrapper {
-    width: 200px;
+    width: 100%;
+    order: 3;
+    margin-top: 4px;
   }
 }
 

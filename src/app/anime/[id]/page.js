@@ -101,7 +101,7 @@ export default async function AnimeDetails({ params }) {
           src={media.bannerImage || media.coverImage.extraLarge}
           alt={displayTitle}
           fill
-          preload={true}
+          priority
           style={{ objectFit: "cover", objectPosition: "center 20%" }}
           className="detail-banner-bg-img"
         />
@@ -129,7 +129,7 @@ export default async function AnimeDetails({ params }) {
                 alt={displayTitle}
                 className="detail-cover-img"
                 fill
-                preload={true}
+                priority
                 sizes="(max-width: 960px) 300px, 300px"
               />
             </div>
