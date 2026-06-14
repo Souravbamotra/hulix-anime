@@ -1,0 +1,537 @@
+"use client";
+
+import { useEffect, useRef, useState, useCallback } from "react";
+import Hls from "hls.js";
+
+export default function VideoPlayer({ src, type = "iframe", directUrl, thumbnailUrl, qualities, onEnded }) {
+  const videoRef = useRef(null);
+  const containerRef = useRef(null);
+  const hlsRef = useRef(null);
+  const progressTimerRef = useRef(null);
+
+  // Player states
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [currentTime, setCurrentTime] = useState(0);
+  const [duration, setDuration] = useState(0);
+  const [volume, setVolume] = useState(1);
+  const [isMuted, setIsMuted] = useState(false);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [showControls, setShowControls] = useState(true);
+  const [buffered, setBuffered] = useState(0);
+  const [isLoading, setIsLoading] = useState(false);
+
+  // Auto Next state
+  const [autoNext, setAutoNext] = useState(true);
+
+  // Sync autoNext state with localStorage on mount
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      const saved = localStorage.getItem("hulix-auto-next");
+      if (saved !== null) {
+        setAutoNext(saved === "true");
+      }
+    }
+  }, []);
+
+  const handleAutoNextToggle = () => {
+    const newVal = !autoNext;
+    setAutoNext(newVal);
+    if (typeof window !== "undefined") {
+      localStorage.setItem("hulix-auto-next", newVal.toString());
+    }
+  };
+
+  const onEndedRef = useRef(onEnded);
+  const autoNextRef = useRef(autoNext);
+
+  useEffect(() => {
+    onEndedRef.current = onEnded;
+  }, [onEnded]);
+
+  useEffect(() => {
+    autoNextRef.current = autoNext;
+  }, [autoNext]);
+
+  // Quality states
+  const [availableQualities, setAvailableQualities] = useState(qualities || []);
+  const [currentQuality, setCurrentQuality] = useState(-1); // -1 = auto for HLS
+  const [showQualityMenu, setShowQualityMenu] = useState(false);
+
+  // Determine if we should use native video (direct URL available)
+  const useNativePlayer = Boolean(directUrl);
+  const isHls = type === "hls" || directUrl?.includes(".m3u8");
+
+  // --- HLS Setup ---
+  useEffect(() => {
+    if (!useNativePlayer || !isHls) return;
+    const video = videoRef.current;
+    if (!video || !directUrl) return;
+
+    if (Hls.isSupported()) {
+      const hls = new Hls({
+        maxBufferLength: 60,
+        maxMaxBufferLength: 120,
+        maxBufferSize: 150 * 1024 * 1024, // 150MB buffer capacity for smooth 1080p playback
+        enableWorker: true,
+      });
+      hlsRef.current = hls;
+      hls.loadSource(directUrl);
+      hls.attachMedia(video);
+
+      hls.on(Hls.Events.MANIFEST_PARSED, (_, data) => {
+        // Extract quality levels from HLS manifest
+        const levels = data.levels.map((level, idx) => ({
+          url: "",
+          label: `${level.height}p`,
+          height: level.height,
+          index: idx,
+        }));
+        // Add "Auto" option
+        setAvailableQualities([{ label: "Auto", index: -1 }, ...levels]);
+        setCurrentQuality(-1);
+      });
+
+      hls.on(Hls.Events.ERROR, (_, data) => {
+        if (data.fatal) {
+          if (data.type === Hls.ErrorTypes.NETWORK_ERROR) hls.startLoad();
+          else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) hls.recoverMediaError();
+        }
+      });
+
+      return () => {
+        hls.destroy();
+        hlsRef.current = null;
+      };
+    } else if (video.canPlayType("application/vnd.apple.mpegurl")) {
+      video.src = directUrl;
+    }
+  }, [directUrl, isHls, useNativePlayer]);
+
+  // --- Direct MP4 Setup ---
+  useEffect(() => {
+    if (!useNativePlayer || isHls) return;
+    const video = videoRef.current;
+    if (!video || !directUrl) return;
+    video.src = directUrl;
+  }, [directUrl, isHls, useNativePlayer]);
+
+  // --- Video Event Listeners ---
+  useEffect(() => {
+    if (!useNativePlayer) return;
+    const video = videoRef.current;
+    if (!video) return;
+
+    const handlePlay = () => setIsPlaying(true);
+    const handlePause = () => setIsPlaying(false);
+    const handleLoadedMeta = () => setDuration(video.duration);
+    const handleTimeUpdate = () => {
+      setCurrentTime(video.currentTime);
+      if (video.buffered.length > 0) {
+        setBuffered(video.buffered.end(video.buffered.length - 1));
+      }
+    };
+    const handleWaiting = () => setIsLoading(true);
+    const handleCanPlay = () => setIsLoading(false);
+    const handleEnded = () => {
+      if (autoNextRef.current && onEndedRef.current) {
+        onEndedRef.current();
+      }
+    };
+
+    video.addEventListener("play", handlePlay);
+    video.addEventListener("pause", handlePause);
+    video.addEventListener("loadedmetadata", handleLoadedMeta);
+    video.addEventListener("timeupdate", handleTimeUpdate);
+    video.addEventListener("waiting", handleWaiting);
+    video.addEventListener("canplay", handleCanPlay);
+    video.addEventListener("ended", handleEnded);
+
+    return () => {
+      video.removeEventListener("play", handlePlay);
+      video.removeEventListener("pause", handlePause);
+      video.removeEventListener("loadedmetadata", handleLoadedMeta);
+      video.removeEventListener("timeupdate", handleTimeUpdate);
+      video.removeEventListener("waiting", handleWaiting);
+      video.removeEventListener("canplay", handleCanPlay);
+      video.removeEventListener("ended", handleEnded);
+    };
+  }, [useNativePlayer]);
+
+  // --- Controls auto-hide ---
+  useEffect(() => {
+    if (!useNativePlayer) return;
+    let timer;
+    const resetTimer = () => {
+      setShowControls(true);
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        if (isPlaying) setShowControls(false);
+      }, 3000);
+    };
+
+    const container = containerRef.current;
+    if (container) {
+      container.addEventListener("mousemove", resetTimer);
+      container.addEventListener("touchstart", resetTimer);
+    }
+    resetTimer();
+
+    return () => {
+      clearTimeout(timer);
+      if (container) {
+        container.removeEventListener("mousemove", resetTimer);
+        container.removeEventListener("touchstart", resetTimer);
+      }
+    };
+  }, [isPlaying, useNativePlayer]);
+
+  // --- Fullscreen change listener ---
+  useEffect(() => {
+    const handleFSChange = () => {
+      setIsFullscreen(!!document.fullscreenElement);
+    };
+    document.addEventListener("fullscreenchange", handleFSChange);
+    return () => document.removeEventListener("fullscreenchange", handleFSChange);
+  }, []);
+
+  // --- Player Controls ---
+  const togglePlay = useCallback(() => {
+    const video = videoRef.current;
+    if (!video) return;
+    if (video.paused) video.play().catch(() => {});
+    else video.pause();
+  }, []);
+
+  const handleSeek = useCallback((e) => {
+    const video = videoRef.current;
+    if (!video || !duration) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const pos = (e.clientX - rect.left) / rect.width;
+    video.currentTime = pos * duration;
+  }, [duration]);
+
+  const handleVolumeChange = useCallback((e) => {
+    const video = videoRef.current;
+    if (!video) return;
+    const val = parseFloat(e.target.value);
+    video.volume = val;
+    setVolume(val);
+    setIsMuted(val === 0);
+  }, []);
+
+  const toggleMute = useCallback(() => {
+    const video = videoRef.current;
+    if (!video) return;
+    video.muted = !video.muted;
+    setIsMuted(video.muted);
+  }, []);
+
+  const toggleFullscreen = useCallback(() => {
+    const container = containerRef.current;
+    if (!container) return;
+    if (!document.fullscreenElement) {
+      container.requestFullscreen?.();
+    } else {
+      document.exitFullscreen?.();
+    }
+  }, []);
+
+  const handleQualityChange = useCallback((qualityIndex) => {
+    if (hlsRef.current) {
+      hlsRef.current.currentLevel = qualityIndex;
+      setCurrentQuality(qualityIndex);
+    }
+    setShowQualityMenu(false);
+  }, []);
+
+  const skip = useCallback((seconds) => {
+    const video = videoRef.current;
+    if (video) video.currentTime = Math.min(Math.max(video.currentTime + seconds, 0), duration);
+  }, [duration]);
+
+  // --- Keyboard Shortcuts ---
+  useEffect(() => {
+    if (!useNativePlayer) return;
+
+    const handleKeyDown = (e) => {
+      // Don't trigger shortcuts if user is typing in an input/textarea
+      const activeEl = document.activeElement;
+      if (activeEl && (activeEl.tagName === "INPUT" || activeEl.tagName === "TEXTAREA")) {
+        return;
+      }
+
+      const video = videoRef.current;
+      if (!video) return;
+
+      switch (e.key) {
+        case " ":
+          e.preventDefault();
+          togglePlay();
+          setShowControls(true);
+          break;
+        case "ArrowRight":
+          e.preventDefault();
+          skip(10);
+          setShowControls(true);
+          break;
+        case "ArrowLeft":
+          e.preventDefault();
+          skip(-10);
+          setShowControls(true);
+          break;
+        case "ArrowUp":
+          e.preventDefault();
+          const newVolUp = Math.min(video.volume + 0.1, 1);
+          video.volume = newVolUp;
+          setVolume(newVolUp);
+          setIsMuted(newVolUp === 0);
+          setShowControls(true);
+          break;
+        case "ArrowDown":
+          e.preventDefault();
+          const newVolDown = Math.max(video.volume - 0.1, 0);
+          video.volume = newVolDown;
+          setVolume(newVolDown);
+          setIsMuted(newVolDown === 0);
+          setShowControls(true);
+          break;
+        case "f":
+        case "F":
+          e.preventDefault();
+          toggleFullscreen();
+          break;
+        case "m":
+        case "M":
+          e.preventDefault();
+          toggleMute();
+          setShowControls(true);
+          break;
+        default:
+          break;
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [useNativePlayer, togglePlay, skip, toggleFullscreen, toggleMute]);
+
+  // Format time helper
+  const formatTime = (t) => {
+    if (!t || isNaN(t)) return "0:00";
+    const m = Math.floor(t / 60);
+    const s = Math.floor(t % 60);
+    return `${m}:${s.toString().padStart(2, "0")}`;
+  };
+
+  // --- RENDER: No source ---
+  if (!src && !directUrl) {
+    return (
+      <div className="player-placeholder glass-panel">
+        <div className="placeholder-content">
+          <svg className="play-icon animate-pulse" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" />
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+          </svg>
+          <p>Select an episode to start streaming</p>
+        </div>
+      </div>
+    );
+  }
+
+  // --- RENDER: Native Custom Player (MP4 / HLS) ---
+  if (useNativePlayer) {
+    return (
+      <div
+        ref={containerRef}
+        className={`video-player-container glass-panel custom-player ${showControls ? "show-controls" : ""}`}
+        onClick={(e) => {
+          // Only toggle play if clicking the video area, not controls
+          if (e.target === videoRef.current || e.target.classList.contains("custom-player-overlay")) {
+            togglePlay();
+          }
+        }}
+      >
+        <video
+          ref={videoRef}
+          className="native-video-element"
+          playsInline
+          crossOrigin="anonymous"
+          poster={thumbnailUrl}
+        />
+
+        {/* Loading Spinner Overlay */}
+        {isLoading && (
+          <div className="custom-player-overlay loading-overlay">
+            <div className="player-spinner" />
+          </div>
+        )}
+
+        {/* Big Play Button (when paused) */}
+        {!isPlaying && !isLoading && (
+          <div className="custom-player-overlay play-overlay" onClick={togglePlay}>
+            <button className="big-play-btn" aria-label="Play">
+              <svg viewBox="0 0 24 24" fill="currentColor" width="64" height="64">
+                <path d="M8 5v14l11-7z" />
+              </svg>
+            </button>
+          </div>
+        )}
+
+
+        {/* Bottom Controls Bar */}
+        <div className={`custom-controls ${showControls ? "visible" : ""}`}>
+          {/* Progress Bar */}
+          <div className="progress-bar-container" onClick={handleSeek}>
+            <div className="progress-bar-bg">
+              <div className="progress-bar-buffered" style={{ width: `${(buffered / (duration || 1)) * 100}%` }} />
+              <div className="progress-bar-fill" style={{ width: `${(currentTime / (duration || 1)) * 100}%` }} />
+            </div>
+          </div>
+
+          <div className="controls-row">
+            {/* Left Controls */}
+            <div className="controls-left">
+              <button className="ctrl-btn" onClick={togglePlay} aria-label={isPlaying ? "Pause" : "Play"}>
+                {isPlaying ? (
+                  <svg viewBox="0 0 24 24" fill="currentColor" width="22" height="22">
+                    <path d="M6 4h4v16H6V4zm8 0h4v16h-4V4z" />
+                  </svg>
+                ) : (
+                  <svg viewBox="0 0 24 24" fill="currentColor" width="22" height="22">
+                    <path d="M8 5v14l11-7z" />
+                  </svg>
+                )}
+              </button>
+
+              {/* Skip Backward */}
+              <button className="ctrl-btn" onClick={() => skip(-10)} aria-label="Rewind 10s" title="-10s">
+                <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20">
+                  <path d="M12.5 3C7.81 3 4 6.81 4 11.5h-3l4 4 4-4H6c0-3.58 2.92-6.5 6.5-6.5S19 7.92 19 11.5 16.08 18 12.5 18v2c4.69 0 8.5-3.81 8.5-8.5S17.19 3 12.5 3z" />
+                </svg>
+              </button>
+
+              {/* Skip Forward */}
+              <button className="ctrl-btn" onClick={() => skip(10)} aria-label="Forward 10s" title="+10s">
+                <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20">
+                  <path d="M11.5 3C16.19 3 20 6.81 20 11.5h3l-4 4-4-4h3c0-3.58-2.92-6.5-6.5-6.5S5 7.92 5 11.5 7.92 18 11.5 18v2C6.81 20 3 16.19 3 11.5S6.81 3 11.5 3z" />
+                </svg>
+              </button>
+
+              {/* Volume */}
+              <button className="ctrl-btn" onClick={toggleMute} aria-label={isMuted ? "Unmute" : "Mute"}>
+                {isMuted || volume === 0 ? (
+                  <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20">
+                    <path d="M16.5 12A4.5 4.5 0 0014 7.97v2.21l2.45 2.45c.03-.2.05-.41.05-.63zm2.5 0c0 .94-.2 1.82-.54 2.64l1.51 1.51A8.796 8.796 0 0021 12c0-4.28-2.99-7.86-7-8.77v2.06c2.89.86 5 3.54 5 6.71zM4.27 3L3 4.27 7.73 9H3v6h4l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06a8.99 8.99 0 003.69-1.81L19.73 21 21 19.73l-9-9L4.27 3zM12 4L9.91 6.09 12 8.18V4z" />
+                  </svg>
+                ) : (
+                  <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20">
+                    <path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3A4.5 4.5 0 0014 7.97v8.05c1.48-.73 2.5-2.25 2.5-3.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z" />
+                  </svg>
+                )}
+              </button>
+
+              <input
+                type="range"
+                className="volume-slider"
+                min="0"
+                max="1"
+                step="0.05"
+                value={isMuted ? 0 : volume}
+                onChange={handleVolumeChange}
+                aria-label="Volume"
+              />
+
+              <span className="time-display">
+                {formatTime(currentTime)} / {formatTime(duration)}
+              </span>
+            </div>
+
+            {/* Right Controls */}
+            <div className="controls-right">
+              {/* Quality Selector */}
+              {availableQualities.length > 0 && (
+                <div className="quality-selector-wrapper">
+                  <button
+                    className="ctrl-btn quality-btn"
+                    onClick={() => setShowQualityMenu(!showQualityMenu)}
+                    aria-label="Quality"
+                    title="Quality"
+                  >
+                    <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20">
+                      <path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58a.49.49 0 00.12-.61l-1.92-3.32a.49.49 0 00-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54a.484.484 0 00-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.07.62-.07.94s.02.64.07.94l-2.03 1.58a.49.49 0 00-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6A3.6 3.6 0 1115.6 12 3.6 3.6 0 0112 15.6z" />
+                    </svg>
+                    <span className="quality-label">
+                      {currentQuality === -1
+                        ? "Auto"
+                        : availableQualities.find((q) => q.index === currentQuality)?.label || "HD"}
+                    </span>
+                  </button>
+
+                  {showQualityMenu && (
+                    <div className="quality-menu glass-panel">
+                      <div className="quality-menu-title">Quality</div>
+                      {availableQualities.map((q) => (
+                        <button
+                          key={q.index ?? q.label}
+                          className={`quality-option ${(q.index ?? q.label) === currentQuality ? "active" : ""}`}
+                          onClick={() => handleQualityChange(q.index ?? q.label)}
+                        >
+                          {q.label}
+                          {(q.index ?? q.label) === currentQuality && <span className="quality-check">✓</span>}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Auto Next Toggle */}
+              <button
+                className={`ctrl-btn auto-next-toggle-btn ${autoNext ? "active" : ""}`}
+                onClick={handleAutoNextToggle}
+                title="Toggle Auto Next Episode"
+              >
+                <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16" style={{ marginRight: "4px" }}>
+                  <path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z" />
+                </svg>
+                <span className="auto-next-label-text" style={{ fontSize: "0.72rem", fontWeight: 700 }}>
+                  {autoNext ? "Auto Next: ON" : "Auto Next: OFF"}
+                </span>
+              </button>
+
+              {/* Fullscreen */}
+              <button className="ctrl-btn" onClick={toggleFullscreen} aria-label="Fullscreen">
+                {isFullscreen ? (
+                  <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20">
+                    <path d="M5 16h3v3h2v-5H5v2zm3-8H5v2h5V5H8v3zm6 11h2v-3h3v-2h-5v5zm2-11V5h-2v5h5V8h-3z" />
+                  </svg>
+                ) : (
+                  <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20">
+                    <path d="M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z" />
+                  </svg>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // --- RENDER: Iframe fallback ---
+  return (
+    <div className="video-player-container glass-panel">
+      <div className="iframe-wrapper">
+        <iframe
+          src={src}
+          className="player-iframe"
+          allowFullScreen
+          scrolling="no"
+          sandbox="allow-scripts allow-same-origin allow-forms allow-presentation"
+        />
+      </div>
+    </div>
+  );
+}
