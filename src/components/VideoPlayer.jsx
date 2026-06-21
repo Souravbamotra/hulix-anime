@@ -51,12 +51,20 @@ export default function VideoPlayer({
   // AniSkip state (Hindi dub only)
   const [skipTimes, setSkipTimes]   = useState(null); // { intro?: {start,end}, outro?: {start,end} }
   const [activeSkip, setActiveSkip] = useState(null); // 'intro' | 'outro' | null
+  const [prevEpisodeId, setPrevEpisodeId] = useState(episodeId);
+
+  if (episodeId !== prevEpisodeId) {
+    setPrevEpisodeId(episodeId);
+    setSkipTimes(null);
+    setActiveSkip(null);
+  }
 
   // Sync autoNext state with localStorage on mount
   useEffect(() => {
     if (typeof window !== "undefined") {
       const saved = localStorage.getItem("hulix-auto-next");
       if (saved !== null) {
+        // eslint-disable-next-line react-hooks/set-state-in-effect
         setAutoNext(saved === "true");
       }
     }
@@ -81,11 +89,7 @@ export default function VideoPlayer({
       .catch(() => {});
   }, [malId, episodeNumber, language]);
 
-  // Reset skip times when episode changes
-  useEffect(() => {
-    setSkipTimes(null);
-    setActiveSkip(null);
-  }, [episodeId]);
+  // Reset skip times when episode changes is now handled during render above
 
   const handleAutoNextToggle = () => {
     const newVal = !autoNext;
@@ -159,6 +163,7 @@ export default function VideoPlayer({
     if (!episodeId || !language) return;
     const saved = getEpisodeProgress(episodeId, language);
     if (saved && saved.timestamp > 10 && !saved.completed) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setResumeInfo(saved);
       setShowResumePrompt(true);
     } else {
@@ -369,7 +374,14 @@ export default function VideoPlayer({
       container.addEventListener("touchstart", resetTimer);
       container.addEventListener("click", resetTimer);
     }
-    resetTimer();
+    
+    // Start the auto-hide timer on mount
+    if (timerRef.current) clearTimeout(timerRef.current);
+    timerRef.current = setTimeout(() => {
+      if (isPlayingRef.current && !showQualityMenuRef.current && !isHoveringControlsRef.current) {
+        setShowControls(false);
+      }
+    }, 3000);
 
     return () => {
       if (timerRef.current) clearTimeout(timerRef.current);
@@ -516,7 +528,7 @@ export default function VideoPlayer({
     return () => {
       window.removeEventListener("keydown", handleKeyDown);
     };
-  }, [useNativePlayer, togglePlay, skip, toggleFullscreen, toggleMute]);
+  }, [useNativePlayer, togglePlay, skip, toggleFullscreen, toggleMute, resetTimer]);
 
   // Resume from saved timestamp
   const handleResume = (e) => {

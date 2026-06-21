@@ -16,7 +16,9 @@ export default function EpisodesList({
   variant = "grid"
 }) {
   // Backwards compatibility: if dubEpisodes is passed and hindiDubEpisodes is empty, use dubEpisodes
-  const resolvedHindiDub = (hindiDubEpisodes && hindiDubEpisodes.length > 0) ? hindiDubEpisodes : (dubEpisodes || []);
+  const resolvedHindiDub = useMemo(() => {
+    return (hindiDubEpisodes && hindiDubEpisodes.length > 0) ? hindiDubEpisodes : (dubEpisodes || []);
+  }, [hindiDubEpisodes, dubEpisodes]);
 
   const hasSub = subEpisodes && subEpisodes.length > 0;
   const hasEngDub = engDubEpisodes && engDubEpisodes.length > 0;
@@ -56,8 +58,15 @@ export default function EpisodesList({
   const [activeTab, setActiveTab] = useState(initialTab);
   const [hideFillers, setHideFillers] = useState(false);
   const [isMounted, setIsMounted] = useState(false);
+  const [prevInitialTab, setPrevInitialTab] = useState(initialTab);
+
+  if (initialTab !== prevInitialTab) {
+    setPrevInitialTab(initialTab);
+    setActiveTab(initialTab);
+  }
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setIsMounted(true);
     const saved = localStorage.getItem("hulix_hide_fillers");
     if (saved === "true") {
@@ -79,9 +88,7 @@ export default function EpisodesList({
     window.dispatchEvent(new Event("hulix_hide_fillers_changed"));
   };
 
-  useEffect(() => {
-    setActiveTab(initialTab);
-  }, [initialTab]);
+  // Syncing activeTab now handled during render above
 
   const episodes = useMemo(() => {
     switch (activeTab) {

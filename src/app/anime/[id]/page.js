@@ -7,6 +7,43 @@ import { findGogoAnimeSlug, getAnimeEpisodes, findRareAnimesSlug, getRareAnimesE
 import EpisodesList from "@/components/EpisodesList";
 import { fetchFillerList, getFillerSlug } from "@/lib/filler";
 
+export async function generateMetadata({ params }) {
+  const { id } = await params;
+  try {
+    const media = await getAnimeDetails(id);
+    if (!media) {
+      return {
+        title: "Anime Not Found | Hulix Anime",
+        description: "We couldn't retrieve the details for this anime.",
+      };
+    }
+    const displayTitle = media.title.english || media.title.romaji;
+    const cleanDescription = media.description
+      ? media.description.replace(/<[^>]*>/g, "").slice(0, 160) + "..."
+      : `Watch ${displayTitle} on Hulix Anime.`;
+
+    return {
+      title: `${displayTitle} | Hulix Anime`,
+      description: cleanDescription,
+      openGraph: {
+        title: `${displayTitle} | Hulix Anime`,
+        description: cleanDescription,
+        images: [
+          {
+            url: media.bannerImage || media.coverImage.extraLarge || media.coverImage.large,
+            alt: displayTitle,
+          },
+        ],
+      },
+    };
+  } catch (error) {
+    return {
+      title: "Hulix Anime",
+      description: "Watch anime online on Hulix Anime.",
+    };
+  }
+}
+
 export const revalidate = 1800; // Cache detail pages for 30 minutes
 
 async function EpisodeListSection({ media }) {
@@ -113,7 +150,7 @@ export default async function AnimeDetails({ params }) {
         <Navbar />
         <div className="main-container error-container">
           <h2>Anime not found</h2>
-          <p>We couldn't retrieve the details for this anime.</p>
+          <p>We couldn&apos;t retrieve the details for this anime.</p>
           <Link href="/" className="glow-btn">Back to Home</Link>
         </div>
       </>

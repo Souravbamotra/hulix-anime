@@ -11,6 +11,7 @@ export default function EpisodeProgressBar({ episodeId, language }) {
     if (!episodeId || !language) return;
     const entry = getEpisodeProgress(episodeId, language);
     if (entry) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setProgress(entry.progress);
       setCompleted(entry.completed);
     } else {

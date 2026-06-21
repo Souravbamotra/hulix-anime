@@ -60,6 +60,13 @@ export default function WatchPlayer({
     }
   };
   const [servers, setServers] = useState(initialServers || []);
+  const [prevEpisodeSlug, setPrevEpisodeSlug] = useState(episodeSlug);
+
+  if (episodeSlug !== prevEpisodeSlug) {
+    setPrevEpisodeSlug(episodeSlug);
+    setServers([]);
+    setIsLoading(true);
+  }
 
   // Helper to check if a server's embed can be extracted to a direct stream
   const isServerExtractable = (server) => {
@@ -87,7 +94,9 @@ export default function WatchPlayer({
 
   const [activeCategory, setActiveCategory] = useState(initialCategory);
   const [activeServerIndex, setActiveServerIndex] = useState(0);
-  const [isLoading, setIsLoading] = useState(false);
+  const [isLoading, setIsLoading] = useState(() => {
+    return (initialServers || []).length === 0 && !!episodeSlug;
+  });
 
   // Determine initial server and whether it is extracting
   const initialIsExtracting = useMemo(() => {
@@ -120,14 +129,22 @@ export default function WatchPlayer({
 
   const categoryKeys = useMemo(() => Object.keys(categories), [categories]);
 
-  useEffect(() => {
-    if (categoryKeys.length > 0 && !categories[activeCategory]) {
-      setActiveCategory(categoryKeys[0]);
-    }
-  }, [categoryKeys, categories, activeCategory]);
+  // Adjust activeCategory during render if current category is invalid
+  if (categoryKeys.length > 0 && !categories[activeCategory]) {
+    setActiveCategory(categoryKeys[0]);
+  }
 
   const currentServers = categories[activeCategory] || [];
   const currentServer = currentServers[activeServerIndex] || currentServers[0] || null;
+
+  const [prevCurrentServer, setPrevCurrentServer] = useState(currentServer);
+  const [prevPlayerMode, setPrevPlayerMode] = useState(playerMode);
+
+  if (currentServer !== prevCurrentServer || playerMode !== prevPlayerMode) {
+    setPrevCurrentServer(currentServer);
+    setPrevPlayerMode(playerMode);
+    setDirectStream(null);
+  }
 
   const handleCategoryChange = (cat) => {
     setActiveCategory(cat);
@@ -162,7 +179,6 @@ export default function WatchPlayer({
   // Fetch servers dynamically if not provided at build time
   useEffect(() => {
     if (servers.length === 0 && episodeSlug) {
-      setIsLoading(true);
       fetch(`/api/watch?episodeId=${encodeURIComponent(episodeSlug)}&servers=true`)
         .then((res) => res.json())
         .then((data) => {
@@ -177,38 +193,25 @@ export default function WatchPlayer({
 
   // Extract direct stream URL from embed when server changes
   useEffect(() => {
-    if (!currentServer || playerMode === "iframe") {
-      setDirectStream(null);
+    if (!currentServer || playerMode === "iframe" || !isServerExtractable(currentServer)) {
       return;
     }
 
     const embedUrl = currentServer.iframeUrl;
     if (!embedUrl) return;
 
-    // Only try extraction for supported media extraction hosts
-    if (
-      embedUrl.includes("megaplay.su") ||
-      embedUrl.includes("codedew.com") ||
-      embedUrl.includes("razorshell.space") ||
-      embedUrl.includes("streambeta") ||
-      embedUrl.includes("multiquality") ||
-      embedUrl.includes("anidap.se")
-    ) {
-      setIsExtracting(true);
-      fetch(`/api/extract-stream?embedUrl=${encodeURIComponent(embedUrl)}`)
-        .then((res) => res.json())
-        .then((data) => {
-          if (data.directUrl) {
-            setDirectStream(data);
-          } else {
-            setDirectStream(null);
-          }
-        })
-        .catch(() => setDirectStream(null))
-        .finally(() => setIsExtracting(false));
-    } else {
-      setDirectStream(null);
-    }
+    setIsExtracting(true);
+    fetch(`/api/extract-stream?embedUrl=${encodeURIComponent(embedUrl)}`)
+      .then((res) => res.json())
+      .then((data) => {
+        if (data.directUrl) {
+          setDirectStream(data);
+        } else {
+          setDirectStream(null);
+        }
+      })
+      .catch(() => setDirectStream(null))
+      .finally(() => setIsExtracting(false));
   }, [currentServer, playerMode]);
 
   if (isLoading) {

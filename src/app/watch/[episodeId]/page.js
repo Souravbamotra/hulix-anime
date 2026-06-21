@@ -8,6 +8,57 @@ import { getAnimeDetails } from "@/lib/anilist";
 import { findGogoAnimeSlug, getAnimeEpisodes, getEpisodeServers, findRareAnimesSlug, getRareAnimesEpisodes, getAnidapEpisodes } from "@/lib/scraper";
 import { fetchFillerList, getFillerSlug } from "@/lib/filler";
 
+export async function generateMetadata({ params, searchParams }) {
+  const { episodeId } = await params;
+  const sParams = await searchParams;
+  const animeId = sParams.animeId;
+  
+  if (!animeId) {
+    return {
+      title: "Streaming | Hulix Anime",
+      description: "Watch anime episodes online on Hulix Anime.",
+    };
+  }
+
+  try {
+    const media = await getAnimeDetails(animeId);
+    if (!media) {
+      return {
+        title: "Streaming | Hulix Anime",
+        description: "Watch anime episodes online on Hulix Anime.",
+      };
+    }
+
+    const epNumMatch = episodeId.match(/-episode-(\d+(\.\d+)?)/i);
+    const epNumFallback = epNumMatch ? epNumMatch[1] : "";
+    const epLabel = epNumFallback ? `Episode ${epNumFallback}` : "Streaming";
+    const displayTitle = media.title.english || media.title.romaji;
+
+    const title = `Watch ${displayTitle} ${epLabel} | Hulix Anime`;
+    const description = `Watch ${displayTitle} ${epLabel} in high quality with Hindi and English Dub/Sub. Stream online on Hulix Anime.`;
+
+    return {
+      title,
+      description,
+      openGraph: {
+        title,
+        description,
+        images: [
+          {
+            url: media.bannerImage || media.coverImage.extraLarge || media.coverImage.large,
+            alt: displayTitle,
+          },
+        ],
+      },
+    };
+  } catch (error) {
+    return {
+      title: "Streaming | Hulix Anime",
+      description: "Watch anime online on Hulix Anime.",
+    };
+  }
+}
+
 export const revalidate = 300; // Cache for 5 minutes (ISR)
 
 const getEpisodesCached = cache(async (romaji, english, format, anilistId, totalEpisodes) => {
@@ -205,7 +256,7 @@ export default async function Watch({ params, searchParams }) {
         <Navbar />
         <div className="main-container error-container">
           <h2>Anime not found</h2>
-          <p>We couldn't retrieve the details for this anime.</p>
+          <p>We couldn&apos;t retrieve the details for this anime.</p>
           <Link href="/" className="glow-btn">Back to Home</Link>
         </div>
       </>
