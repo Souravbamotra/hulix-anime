@@ -6,6 +6,14 @@ const nextConfig = {
         protocol: "https",
         hostname: "**.anilist.co",
       },
+      {
+        protocol: "https",
+        hostname: "**.rareanimes.mov",
+      },
+      {
+        protocol: "https",
+        hostname: "9anime.org.lv",
+      },
     ],
     qualities: [75],
   },

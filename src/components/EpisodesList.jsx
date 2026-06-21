@@ -2,6 +2,7 @@
 
 import { useState, useMemo, useEffect } from "react";
 import Link from "next/link";
+import EpisodeProgressBar from "./EpisodeProgressBar";
 
 export default function EpisodesList({
   subEpisodes = [],
@@ -11,6 +12,7 @@ export default function EpisodesList({
   dubEpisodes,
   animeId,
   currentEpisodeId = "",
+  fillerList = {},
   variant = "grid"
 }) {
   // Backwards compatibility: if dubEpisodes is passed and hindiDubEpisodes is empty, use dubEpisodes
@@ -52,6 +54,30 @@ export default function EpisodesList({
   }, [currentEpisodeId, hasSub, hasEngDub, hasHindiDub, engDubEpisodes]);
 
   const [activeTab, setActiveTab] = useState(initialTab);
+  const [hideFillers, setHideFillers] = useState(false);
+  const [isMounted, setIsMounted] = useState(false);
+
+  useEffect(() => {
+    setIsMounted(true);
+    const saved = localStorage.getItem("hulix_hide_fillers");
+    if (saved === "true") {
+      setHideFillers(true);
+    }
+
+    // Sync state if it changes from another component (like WatchPlayer)
+    const handleSync = () => {
+      setHideFillers(localStorage.getItem("hulix_hide_fillers") === "true");
+    };
+    window.addEventListener("hulix_hide_fillers_changed", handleSync);
+    return () => window.removeEventListener("hulix_hide_fillers_changed", handleSync);
+  }, []);
+
+  const handleHideFillersToggle = (e) => {
+    const newVal = e.target.checked;
+    setHideFillers(newVal);
+    localStorage.setItem("hulix_hide_fillers", newVal ? "true" : "false");
+    window.dispatchEvent(new Event("hulix_hide_fillers_changed"));
+  };
 
   useEffect(() => {
     setActiveTab(initialTab);
@@ -64,6 +90,22 @@ export default function EpisodesList({
       default: return subEpisodes;
     }
   }, [activeTab, subEpisodes, engDubEpisodes, resolvedHindiDub]);
+
+  const hasFillers = useMemo(() => {
+    if (!fillerList || Object.keys(fillerList).length === 0) return false;
+    return Object.values(fillerList).some(status => status === "filler");
+  }, [fillerList]);
+
+  const filteredEpisodes = useMemo(() => {
+    if (!isMounted || !hideFillers || !hasFillers) {
+      return episodes;
+    }
+    return episodes.filter(ep => {
+      const epNum = parseFloat(ep.number);
+      const status = fillerList[epNum];
+      return status !== "filler";
+    });
+  }, [episodes, hideFillers, hasFillers, fillerList, isMounted]);
 
   const renderTabs = () => {
     if (!showTabs) return null;
@@ -83,26 +125,70 @@ export default function EpisodesList({
     );
   };
 
+  const renderFillerToggle = () => {
+    if (!isMounted || !hasFillers) return null;
+    return (
+      <div className="filler-toggle-wrapper">
+        <label className="filler-switch-label">
+          <input
+            type="checkbox"
+            checked={hideFillers}
+            onChange={handleHideFillersToggle}
+            className="filler-switch-input"
+          />
+          <span className="filler-switch-slider" />
+          <span className="filler-switch-text">Hide Fillers</span>
+        </label>
+      </div>
+    );
+  };
+
   if (variant === "sidebar") {
     return (
       <div className="episodes-sidebar glass-panel">
-        <h3 className="sidebar-title">Episodes</h3>
+        <div className="sidebar-header-flex">
+          <h3 className="sidebar-title">Episodes</h3>
+          {renderFillerToggle()}
+        </div>
         
         {renderTabs()}
 
         <div className="sidebar-list">
-          {episodes.length > 0 ? (
-            episodes.map((ep) => {
+          {filteredEpisodes.length > 0 ? (
+            filteredEpisodes.map((ep) => {
               const isActive = ep.slug === currentEpisodeId;
+              const resolvedLang = activeTab === "engDub" ? "dub" : (activeTab === "hindiDub" ? "hindi" : "sub");
+              const epNum = parseFloat(ep.number);
+              const status = fillerList[epNum];
+              
+              let statusClass = "";
+              let statusLabel = "";
+              if (status === "filler") {
+                statusClass = "filler-badge-filler";
+                statusLabel = "Filler";
+              } else if (status === "mixed") {
+                statusClass = "filler-badge-mixed";
+                statusLabel = "Mixed";
+              } else if (status === "anime_canon") {
+                statusClass = "filler-badge-anime-canon";
+                statusLabel = "Anime Canon";
+              }
+
               return (
                 <Link
                   key={ep.slug}
                   href={`/watch/${ep.slug}?animeId=${animeId}`}
-                  className={`sidebar-item ${isActive ? "active" : ""}`}
+                  className={`sidebar-item ${isActive ? "active" : ""} ${status ? `has-status ${status}` : ""}`}
+                  style={{ position: "relative", overflow: "hidden" }}
                 >
-                  <span className="sidebar-ep-num">EP {ep.number}</span>
-                  <span className="sidebar-ep-label">Episode {ep.number}</span>
+                  <div className="sidebar-ep-details">
+                    <span className="sidebar-ep-num">EP {ep.number}</span>
+                    {statusLabel && (
+                      <span className={`filler-badge ${statusClass}`}>{statusLabel}</span>
+                    )}
+                  </div>
                   {isActive && <span className="playing-dot" />}
+                  <EpisodeProgressBar episodeId={ep.slug} language={resolvedLang} />
                 </Link>
               );
             })
@@ -123,24 +209,51 @@ export default function EpisodesList({
         <h3 className="episodes-section-title" style={{ marginBottom: 0 }}>
           Watch Episodes
         </h3>
-        {episodes.length > 0 && (
-          <span className="ep-count">{episodes.length} Episodes available</span>
-        )}
+        <div style={{ display: "flex", alignItems: "center", gap: "16px" }}>
+          {renderFillerToggle()}
+          {filteredEpisodes.length > 0 && (
+            <span className="ep-count">{filteredEpisodes.length} Episodes available</span>
+          )}
+        </div>
       </div>
 
       {renderTabs()}
 
-      {episodes.length > 0 ? (
+      {filteredEpisodes.length > 0 ? (
         <div className="episodes-grid">
-          {episodes.map((episode) => (
-            <Link
-              key={episode.slug}
-              href={`/watch/${episode.slug}?animeId=${animeId}`}
-              className="episode-btn"
-            >
-              EP {episode.number}
-            </Link>
-          ))}
+          {filteredEpisodes.map((episode) => {
+            const resolvedLang = activeTab === "engDub" ? "dub" : (activeTab === "hindiDub" ? "hindi" : "sub");
+            const epNum = parseFloat(episode.number);
+            const status = fillerList[epNum];
+            
+            let statusClass = "";
+            let statusLabel = "";
+            if (status === "filler") {
+              statusClass = "filler-badge-filler";
+              statusLabel = "Filler";
+            } else if (status === "mixed") {
+              statusClass = "filler-badge-mixed";
+              statusLabel = "Mixed";
+            } else if (status === "anime_canon") {
+              statusClass = "filler-badge-anime-canon";
+              statusLabel = "Anime Canon";
+            }
+
+            return (
+              <Link
+                key={episode.slug}
+                href={`/watch/${episode.slug}?animeId=${animeId}`}
+                className={`episode-btn ${status ? `has-status ${status}` : ""}`}
+                style={{ position: "relative", overflow: "hidden" }}
+              >
+                <span className="ep-num-text">EP {episode.number}</span>
+                {statusLabel && (
+                  <span className={`filler-badge ${statusClass}`}>{statusLabel}</span>
+                )}
+                <EpisodeProgressBar episodeId={episode.slug} language={resolvedLang} />
+              </Link>
+            );
+          })}
         </div>
       ) : (
         <div className="no-episodes">

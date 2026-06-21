@@ -1,10 +1,35 @@
 import * as cheerio from "cheerio";
 import dns from "node:dns";
 import { getCacheKey, getCache, setCache } from "./cache.js";
+import {
+  COMBINE_SEASONS_WHITELIST,
+  RAREANIMES_SEASON_OFFSETS,
+  DORAEMON_MOVIE_MAP,
+  getGogoAnimeOverride,
+  getRareAnimesOverrideBeforeCache,
+  getRareAnimesOverrideAfterCache,
+  getAniListSeasonNum
+} from "./mappings.js";
 
 // Force Node.js DNS to prefer IPv4 first to avoid DNS/IPv6 timeouts
 if (dns && typeof dns.setDefaultResultOrder === "function") {
   dns.setDefaultResultOrder("ipv4first");
+}
+
+// ─── In-Flight Request Deduplication ─────────────────────────────────────────
+const inflightRequests = new Map(); // key → Promise
+
+async function deduplicateRequest(key, fetchFn) {
+  if (inflightRequests.has(key)) {
+    return inflightRequests.get(key);
+  }
+  const promise = fetchFn();
+  inflightRequests.set(key, promise);
+  try {
+    return await promise;
+  } finally {
+    inflightRequests.delete(key);
+  }
 }
 
 const GOGOANIME_URL = "https://9anime.org.lv";
@@ -35,6 +60,11 @@ function computeSimilarity(titleA, titleB) {
 }
 
 export async function searchGogoAnime(keyword) {
+  const reqKey = `search_gogo:${keyword}`;
+  return deduplicateRequest(reqKey, () => searchGogoAnimeUncached(keyword));
+}
+
+async function searchGogoAnimeUncached(keyword) {
   try {
     const url = `${GOGOANIME_URL}/?s=${encodeURIComponent(keyword)}`;
     console.log(`[Scraper] Searching: ${url}`);
@@ -92,22 +122,22 @@ export async function findGogoAnimeSlug(aniListTitleRomaji, aniListTitleEnglish,
   const cached = await getCache(cacheKey);
   if (cached) return cached;
   
-  const result = await findGogoAnimeSlugUncached(aniListTitleRomaji, aniListTitleEnglish, format, isDub);
-  if (result) {
-    await setCache(cacheKey, result);
-  }
-  return result;
+  return deduplicateRequest(cacheKey, async () => {
+    const doubleCheck = await getCache(cacheKey);
+    if (doubleCheck) return doubleCheck;
+    
+    const result = await findGogoAnimeSlugUncached(aniListTitleRomaji, aniListTitleEnglish, format, isDub);
+    if (result) {
+      await setCache(cacheKey, result);
+    }
+    return result;
+  });
 }
 
 // Maps AniList titles to Gogoanime/9anime slug
 async function findGogoAnimeSlugUncached(aniListTitleRomaji, aniListTitleEnglish, format = "", isDub = false) {
-  // Hardcoded direct overrides for extremely popular or problematic titles
-  const cleanTitleRomaji = (aniListTitleRomaji || "").toLowerCase().trim();
-  const cleanTitleEnglish = (aniListTitleEnglish || "").toLowerCase().trim();
-  
-  if (cleanTitleRomaji === "one piece" || cleanTitleEnglish === "one piece") {
-    return isDub ? "anime/one-piece-dub" : "anime/one-piece";
-  }
+  const override = getGogoAnimeOverride(aniListTitleRomaji, aniListTitleEnglish, isDub);
+  if (override) return override;
 
   const searchQueries = [aniListTitleRomaji, aniListTitleEnglish].filter(Boolean);
   
@@ -197,11 +227,16 @@ export async function getAnimeEpisodes(slug) {
   const cached = await getCache(cacheKey);
   if (cached) return cached;
   
-  const result = await getAnimeEpisodesUncached(slug);
-  if (result && result.length > 0) {
-    await setCache(cacheKey, result);
-  }
-  return result;
+  return deduplicateRequest(cacheKey, async () => {
+    const doubleCheck = await getCache(cacheKey);
+    if (doubleCheck) return doubleCheck;
+    
+    const result = await getAnimeEpisodesUncached(slug);
+    if (result && result.length > 0) {
+      await setCache(cacheKey, result);
+    }
+    return result;
+  });
 }
 
 /**
@@ -328,11 +363,49 @@ export async function getEpisodeServers(episodeSlug) {
   const cached = await getCache(cacheKey);
   if (cached) return cached;
   
-  const result = await getEpisodeServersUncached(episodeSlug);
-  if (result && result.servers && result.servers.length > 0) {
-    await setCache(cacheKey, result);
+  return deduplicateRequest(cacheKey, async () => {
+    const doubleCheck = await getCache(cacheKey);
+    if (doubleCheck) return doubleCheck;
+    
+    const result = await getEpisodeServersUncached(episodeSlug);
+    if (result && result.servers && result.servers.length > 0) {
+      await setCache(cacheKey, result);
+    }
+    return result;
+  });
+}
+
+async function resolveTrueEmbedUrl(url) {
+  if (!url) return url;
+  if (url.includes("codedew.com") || url.includes("multiquality")) {
+    try {
+      console.log(`[Scraper] Resolving true embed player URL for: ${url}`);
+      const res = await fetch(url, {
+        headers: {
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36"
+        }
+      });
+      if (res.ok) {
+        const html = await res.text();
+        const $ = cheerio.load(html);
+        let iframeUrl = $("iframe").first().attr("src");
+        if (!iframeUrl) {
+          const match = html.match(/https?:\/\/argon\.razorshell\.space\/embed\/[a-zA-Z0-9]+/);
+          if (match) iframeUrl = match[0];
+        }
+        if (iframeUrl) {
+          if (iframeUrl.startsWith("//")) {
+            iframeUrl = `https:${iframeUrl}`;
+          }
+          console.log(`[Scraper] Resolved true embed URL: ${iframeUrl}`);
+          return iframeUrl;
+        }
+      }
+    } catch (e) {
+      console.warn("[Scraper] Failed to resolve true embed URL:", e.message);
+    }
   }
-  return result;
+  return url;
 }
 
 /**
@@ -356,7 +429,7 @@ async function getEpisodeServersUncached(episodeSlug) {
         return { servers: [], defaultServer: null };
       }
       
-      const servers = ep.links.map((link) => {
+      const servers = await Promise.all(ep.links.map(async (link) => {
         let name = link.label;
         if (name.includes("MultiQuality")) {
           name = "WatchMultiQuality";
@@ -365,14 +438,18 @@ async function getEpisodeServersUncached(episodeSlug) {
         } else {
           name = name.trim();
         }
+        
+        // Resolve the true embed player URL (e.g. razorshell.space instead of codedew.com wrapper)
+        const resolvedUrl = await resolveTrueEmbedUrl(link.href);
+        
         return {
           category: "dub",
           name,
           type: "embed",
-          iframeUrl: link.href,
+          iframeUrl: resolvedUrl,
           sourceType: "iframe",
         };
-      });
+      }));
       
       return {
         servers,
@@ -531,6 +608,11 @@ export async function getEpisodeStreamUrl(episodeSlug) {
 // --- RareAnimes (Hindi Dub) Scraper ---
 
 export async function searchRareAnimes(keyword) {
+  const reqKey = `search_rare:${keyword}`;
+  return deduplicateRequest(reqKey, () => searchRareAnimesUncached(keyword));
+}
+
+async function searchRareAnimesUncached(keyword) {
   try {
     const url = `https://www.rareanimes.mov/?s=${encodeURIComponent(keyword)}`;
     console.log(`[Scraper] RareAnimes Searching: ${url}`);
@@ -568,32 +650,24 @@ export async function searchRareAnimes(keyword) {
 }
 
 export async function findRareAnimesSlug(aniListTitleRomaji, aniListTitleEnglish, format = "") {
+  const override = getRareAnimesOverrideBeforeCache(aniListTitleRomaji, aniListTitleEnglish);
+  if (override) return override;
+
   const cacheKey = getCacheKey("rare_slug", `${aniListTitleRomaji}_${aniListTitleEnglish}`);
   const cached = await getCache(cacheKey);
   if (cached) return cached;
   
-  const result = await findRareAnimesSlugUncached(aniListTitleRomaji, aniListTitleEnglish, format);
-  if (result) {
-    await setCache(cacheKey, result);
-  }
-  return result;
+  return deduplicateRequest(cacheKey, async () => {
+    const doubleCheck = await getCache(cacheKey);
+    if (doubleCheck) return doubleCheck;
+    
+    const result = await findRareAnimesSlugUncached(aniListTitleRomaji, aniListTitleEnglish, format);
+    if (result) {
+      await setCache(cacheKey, result);
+    }
+    return result;
+  });
 }
-
-const RAREANIMES_SEASON_OFFSETS = {
-  "one piece": {
-    1: 1,
-    20: 892,
-    22: 1089
-  }
-};
-
-const COMBINE_SEASONS_WHITELIST = [
-  "one piece",
-  "black clover",
-  "detective conan",
-  "pokemon",
-  "fairy tail"
-];
 
 function cleanTitleForGrouping(title) {
   if (!title) return "";
@@ -611,36 +685,70 @@ function getSeasonNum(title) {
   return match ? parseInt(match[1], 10) : 1;
 }
 
-function getAniListSeasonNum(title) {
-  if (!title) return null;
-  const lower = title.toLowerCase();
-  const seasonMatch = lower.match(/\bseason\s*0*(\d+)\b/i) || 
-                      lower.match(/\b0*(\d+)(?:st|nd|rd|th)\s*season\b/i) ||
-                      lower.match(/\bpart\s*0*(\d+)\b/i);
-  if (seasonMatch) {
-    return parseInt(seasonMatch[1], 10);
+async function resolveDoraemonMovieSlug(aniListTitleRomaji, aniListTitleEnglish) {
+  const cleanRomaji = (aniListTitleRomaji || "").toLowerCase();
+  const cleanEnglish = (aniListTitleEnglish || "").toLowerCase();
+  
+  const sortedKeys = Object.keys(DORAEMON_MOVIE_MAP).sort((a, b) => b.length - a.length);
+  let matchedNum = null;
+  
+  for (const key of sortedKeys) {
+    if (cleanRomaji.includes(key) || cleanEnglish.includes(key)) {
+      matchedNum = DORAEMON_MOVIE_MAP[key];
+      break;
+    }
   }
   
-  if (lower.includes(" season ii") || lower.includes(" 2nd season")) return 2;
-  if (lower.includes(" season iii") || lower.includes(" 3rd season")) return 3;
-  if (lower.includes(" season iv") || lower.includes(" 4th season")) return 4;
-  if (lower.includes(" season v") || lower.includes(" 5th season")) return 5;
+  if (!matchedNum) return null;
   
-  return null;
+  try {
+    const res = await fetch("https://www.rareanimes.mov/hindi/doraemon-all-movies-hindi-dubbed-download-hd/", {
+      headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36" }
+    });
+    if (!res.ok) return null;
+    const html = await res.text();
+    const $ = cheerio.load(html);
+    
+    let zipperUrl = "";
+    $(".entry-content a").each((i, el) => {
+      const text = $(el).text().trim();
+      const href = $(el).attr("href") || "";
+      const numRegex = new RegExp(`^movie\\s*${matchedNum}\\s*[:–-]`, "i");
+      if (href && (numRegex.test(text) || text.toLowerCase().includes(`movie ${matchedNum}`))) {
+        zipperUrl = href;
+        return false; // break
+      }
+    });
+    
+    if (!zipperUrl) return null;
+    
+    const redirectRes = await fetch(zipperUrl, {
+      headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36" }
+    });
+    const finalUrl = redirectRes.url;
+    const finalSlug = finalUrl.replace("https://www.rareanimes.mov/", "").replace(/\/$/, "");
+    console.log(`[Scraper] Mapped Doraemon Movie ${matchedNum} to slug: ${finalSlug}`);
+    return finalSlug;
+  } catch (err) {
+    console.warn("[Scraper] Error resolving Doraemon movie slug:", err.message || err);
+    return null;
+  }
 }
 
 async function findRareAnimesSlugUncached(aniListTitleRomaji, aniListTitleEnglish, format = "") {
-  // Hardcoded direct overrides for extremely popular or problematic titles
   const cleanTitleRomaji = (aniListTitleRomaji || "").toLowerCase().trim();
   const cleanTitleEnglish = (aniListTitleEnglish || "").toLowerCase().trim();
   
-  if (cleanTitleRomaji === "naruto" || cleanTitleEnglish === "naruto") {
-    return "hindi/naruto-all-season-hindi-tamil-telugu-bengali-malayalam-episodes-download-hd";
+  const isDoraemon = cleanTitleRomaji.includes("doraemon") || cleanTitleEnglish.includes("doraemon");
+  const isMovie = format === "MOVIE";
+  if (isDoraemon && isMovie) {
+    console.log(`[Scraper] Doraemon movie detected. Resolving from compilation page...`);
+    const mappedSlug = await resolveDoraemonMovieSlug(aniListTitleRomaji, aniListTitleEnglish);
+    if (mappedSlug) return mappedSlug;
   }
-  if (cleanTitleRomaji === "naruto shippuden" || cleanTitleEnglish === "naruto shippuden" || 
-      cleanTitleRomaji === "naruto: shippuuden" || cleanTitleEnglish === "naruto: shippuuden") {
-    return "hindi/naruto-shippuden-all-season-hindi-tamil-telugu-bengali-malayalam-episodes-download-hd";
-  }
+  
+  const override = getRareAnimesOverrideAfterCache(aniListTitleRomaji, aniListTitleEnglish);
+  if (override) return override;
 
   // Check if we should combine seasons for this title (Case A)
   const shouldCombine = COMBINE_SEASONS_WHITELIST.some(title => 
@@ -818,6 +926,36 @@ function parseEpisodesFromHtml(html, slug) {
     });
   }
   
+  // Style 3: Movie / OVA - direct download/watch links on the page without episode tags
+  if (episodes.length === 0) {
+    const movieLinks = [];
+    $(".entry-content a").each((i, el) => {
+      const aText = $(el).text().trim();
+      const href = $(el).attr("href") || "";
+      
+      if (href && (
+        aText.includes("Watch") || 
+        aText.includes("Stream") || 
+        aText.includes("Mult") || 
+        aText.includes("Beta") || 
+        aText.includes("Mega") || 
+        aText.includes("Gdrive")
+      )) {
+        movieLinks.push({ label: aText, href });
+      }
+    });
+    
+    if (movieLinks.length > 0) {
+      const safeSlug = slug.replace(/\//g, "__");
+      episodes.push({
+        number: 1,
+        title: "Movie / OVA",
+        slug: `rareanimes-${safeSlug}-episode-1`,
+        links: movieLinks
+      });
+    }
+  }
+  
   return episodes;
 }
 
@@ -864,11 +1002,16 @@ export async function getRareAnimesEpisodes(slug, isSubPage = false) {
   const cached = await getCache(cacheKey);
   if (cached) return cached;
   
-  const result = await getRareAnimesEpisodesUncached(slug, isSubPage);
-  if (result && result.length > 0) {
-    await setCache(cacheKey, result);
-  }
-  return result;
+  return deduplicateRequest(cacheKey, async () => {
+    const doubleCheck = await getCache(cacheKey);
+    if (doubleCheck) return doubleCheck;
+    
+    const result = await getRareAnimesEpisodesUncached(slug, isSubPage);
+    if (result && result.length > 0) {
+      await setCache(cacheKey, result);
+    }
+    return result;
+  });
 }
 
 async function getRareAnimesEpisodesUncached(slug, isSubPage = false) {
@@ -893,9 +1036,16 @@ async function getRareAnimesEpisodesUncached(slug, isSubPage = false) {
       // Determine starting offset
       let offset = currentAccumulatedOffset;
       
-      // Check for hardcoded offsets (e.g. "one piece")
-      const animeKey = "one piece"; // Hardcoded mapping lookup key
-      if (RAREANIMES_SEASON_OFFSETS[animeKey] && RAREANIMES_SEASON_OFFSETS[animeKey][seasonNum] !== undefined) {
+      // Check for hardcoded offsets dynamically
+      let animeKey = "";
+      const lowerSlug = actualSlug.toLowerCase();
+      if (lowerSlug.includes("one-piece") || lowerSlug.includes("one_piece")) {
+        animeKey = "one piece";
+      } else if (lowerSlug.includes("doraemon")) {
+        animeKey = "doraemon";
+      }
+      
+      if (animeKey && RAREANIMES_SEASON_OFFSETS[animeKey] && RAREANIMES_SEASON_OFFSETS[animeKey][seasonNum] !== undefined) {
         offset = RAREANIMES_SEASON_OFFSETS[animeKey][seasonNum];
       }
       
@@ -922,7 +1072,7 @@ async function getRareAnimesEpisodesUncached(slug, isSubPage = false) {
   }
 
   try {
-    const url = `https://www.rareanimes.mov/${slug}/`;
+    const url = slug.startsWith("http") ? slug : `https://www.rareanimes.mov/${slug}/`;
     console.log(`[Scraper] Fetching RareAnimes episodes from: ${url}`);
     
     const res = await fetch(url, {
@@ -933,31 +1083,63 @@ async function getRareAnimesEpisodesUncached(slug, isSubPage = false) {
       console.warn(`[Scraper] Episodes fetch failed with status ${res.status} for slug: ${slug}`);
       return [];
     }
+    
+    const finalUrl = res.url;
+    // Resolve zipper redirects to actual RareAnimes slugs if possible
+    let resolvedSlug = slug;
+    if (finalUrl.includes("rareanimes.mov/")) {
+      resolvedSlug = finalUrl.replace(/https?:\/\/(www\.)?rareanimes\.mov\//, "").replace(/\/$/, "");
+    }
+    
     const html = await res.text();
-    let episodes = parseEpisodesFromHtml(html, slug);
+    
+    // Check if the final URL is a codedew multiquality player page
+    if (finalUrl.includes("codedew.com/multiquality/") || finalUrl.includes("/multiquality/")) {
+      console.log(`[Scraper] Detected codedew multiquality player page: ${finalUrl}`);
+      const $ = cheerio.load(html);
+      let embedUrl = $("iframe").first().attr("src");
+      if (!embedUrl) {
+        const match = html.match(/https?:\/\/argon\.razorshell\.space\/embed\/[a-zA-Z0-9]+/);
+        if (match) embedUrl = match[0];
+      }
+      
+      if (embedUrl) {
+        console.log(`[Scraper] Extracted embed player URL: ${embedUrl}`);
+        const safeSlug = slug.replace(/\//g, "__");
+        return [{
+          number: 1,
+          title: "Movie / OVA",
+          slug: `rareanimes-${safeSlug}-episode-1`,
+          links: [
+            { label: "StreamBeta", href: embedUrl },
+            { label: "WatchMultiQuality", href: finalUrl }
+          ]
+        }];
+      }
+    }
+    
+    let episodes = parseEpisodesFromHtml(html, resolvedSlug);
     
     // Check if the page has an external linker page (e.g. store.animetoonhindi.com/archives/[id])
-    if (episodes.length === 0) {
-      const $ = cheerio.load(html);
-      let linkerUrl = "";
-      $(".entry-content a").each((i, el) => {
-        const href = $(el).attr("href") || "";
-        const text = $(el).text().trim();
-        if (href && (href.includes("animetoonhindi.com/archives/") || href.includes("/archives/") || text.toLowerCase().includes("multiquality"))) {
-          linkerUrl = href;
-          return false; // break
-        }
-      });
-      
-      if (linkerUrl) {
-        console.log(`[Scraper] Found linker page directly on ${slug}: ${linkerUrl}. Fetching linker page...`);
-        const linkerRes = await fetch(linkerUrl, {
-          headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36" }
-        });
-        const linkerHtml = await linkerRes.text();
-        episodes = parseEpisodesFromHtml(linkerHtml, slug);
-        console.log(`[Scraper] Parsed ${episodes.length} episodes from linker page: ${linkerUrl}`);
+    let linkerUrl = "";
+    const $ = cheerio.load(html);
+    $(".entry-content a").each((i, el) => {
+      const href = $(el).attr("href") || "";
+      const text = $(el).text().trim();
+      if (href && (href.includes("animetoonhindi.com/archives/") || href.includes("/archives/") || text.toLowerCase().includes("multiquality"))) {
+        linkerUrl = href;
+        return false; // break
       }
+    });
+
+    if (linkerUrl && (episodes.length <= 1 || episodes.some(ep => ep.links.some(l => l.href.includes("/archives/") || l.href.includes("animetoonhindi.com"))))) {
+      console.log(`[Scraper] Found linker page directly on ${slug}: ${linkerUrl}. Fetching linker page...`);
+      const linkerRes = await fetch(linkerUrl, {
+        headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36" }
+      });
+      const linkerHtml = await linkerRes.text();
+      episodes = parseEpisodesFromHtml(linkerHtml, slug);
+      console.log(`[Scraper] Parsed ${episodes.length} episodes from linker page: ${linkerUrl}`);
     }
     
     // Check for Arc/Season sub-pages if we are not already in a sub-page
@@ -1080,6 +1262,10 @@ async function getRareAnimesEpisodesUncached(slug, isSubPage = false) {
 // In-memory cache for JuicyCodes decryption player script to avoid repetitive fetches
 let cachedPlayerJs = null;
 
+// In-memory cache for extracted stream results { result, expiresAt }
+const extractionCache = new Map();
+const EXTRACTION_CACHE_TTL = 30 * 60 * 1000; // 30 minutes
+
 async function getPlayerJs() {
   if (cachedPlayerJs) return cachedPlayerJs;
   try {
@@ -1100,11 +1286,29 @@ async function getPlayerJs() {
 }
 
 export async function extractRareAnimesStream(embedUrl) {
+  const cached = extractionCache.get(embedUrl);
+  if (cached && Date.now() < cached.expiresAt) {
+    console.log(`[Scraper] Extraction cache hit for: ${embedUrl}`);
+    return cached.result;
+  }
+
+  const reqKey = `extract_stream:${embedUrl}`;
+  return deduplicateRequest(reqKey, async () => {
+    const doubleCheck = extractionCache.get(embedUrl);
+    if (doubleCheck && Date.now() < doubleCheck.expiresAt) {
+      return doubleCheck.result;
+    }
+    return extractRareAnimesStreamUncached(embedUrl);
+  });
+}
+
+async function extractRareAnimesStreamUncached(embedUrl) {
   try {
     console.log(`[Scraper] Extracting RareAnimes stream from: ${embedUrl}`);
     const res = await fetch(embedUrl, {
       headers: {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36",
+        "Referer": "https://codedew.com/"
       }
     });
     
@@ -1144,7 +1348,7 @@ export async function extractRareAnimesStream(embedUrl) {
       if (json.success && json.player_sources && json.player_sources.length > 0) {
         const source = json.player_sources[0];
         const isHls = source.url.includes(".m3u8") || source.url.includes("stream");
-        return {
+        const result = {
           directUrl: source.url,
           type: isHls ? "hls" : "mp4",
           qualities: json.player_sources.map(s => ({
@@ -1153,29 +1357,35 @@ export async function extractRareAnimesStream(embedUrl) {
             type: isHls ? "hls" : "mp4"
           }))
         };
+        extractionCache.set(embedUrl, { result, expiresAt: Date.now() + EXTRACTION_CACHE_TTL });
+        return result;
       }
     }
     
-    // Case 2: MultiQuality (which embeds razorshell.space iframe)
-    if (html.includes("razorshell.space/embed") || finalUrl.includes("multiquality")) {
-      let iframeUrl = "";
-      const iframeMatch = html.match(/iframe\s+src="([^"]+)"/i);
-      if (iframeMatch) {
-        iframeUrl = iframeMatch[1];
-      } else if (finalUrl.includes("razorshell.space/embed")) {
-        iframeUrl = finalUrl;
+    // Case 2: MultiQuality / Razorshell
+    if (finalUrl.includes("razorshell.space") || html.includes("razorshell.space/embed") || finalUrl.includes("multiquality")) {
+      let embedHtml = html;
+      const isAlreadyEmbed = finalUrl.includes("razorshell.space/embed");
+      
+      if (!isAlreadyEmbed) {
+        let iframeUrl = "";
+        const iframeMatch = html.match(/iframe\s+src="([^"]+)"/i);
+        if (iframeMatch) {
+          iframeUrl = iframeMatch[1];
+        }
+        
+        if (iframeUrl) {
+          const embedRes = await fetch(iframeUrl, {
+            headers: {
+              "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36",
+              "Referer": "https://codedew.com/"
+            }
+          });
+          embedHtml = await embedRes.text();
+        }
       }
       
-      if (iframeUrl) {
-        const embedRes = await fetch(iframeUrl, {
-          headers: {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36",
-            "Referer": "https://codedew.com/"
-          }
-        });
-        
-        const embedHtml = await embedRes.text();
-        const jcMatch = embedHtml.match(/_juicycodes\(([\s\S]*?)\)/);
+      const jcMatch = embedHtml.match(/_juicycodes\(([\s\S]*?)\)/);
         if (jcMatch) {
           let encryptedStr = "";
           try {
@@ -1222,22 +1432,224 @@ export async function extractRareAnimesStream(embedUrl) {
                     });
                   }
                   
-                  return {
+                  const result = {
                     directUrl,
                     type: isHls ? "hls" : "mp4",
                     qualities: qualities.length > 0 ? qualities : undefined
                   };
+                  extractionCache.set(embedUrl, { result, expiresAt: Date.now() + EXTRACTION_CACHE_TTL });
+                  return result;
                 }
               }
             }
           }
         }
       }
-    }
     
     throw new Error("No recognized streaming provider format found");
   } catch (error) {
     console.error("[Scraper] extractRareAnimesStream error:", error);
     return null;
   }
+}
+
+// --- AniDap (Fallback) Scraper ---
+
+export async function getAnidapSlug(anilistId) {
+  const cacheKey = getCacheKey("anidap_slug", String(anilistId));
+  const cached = await getCache(cacheKey);
+  if (cached) return cached;
+  
+  return deduplicateRequest(cacheKey, async () => {
+    const doubleCheck = await getCache(cacheKey);
+    if (doubleCheck) return doubleCheck;
+    
+    const url = `https://anidap.se/watch.data?id=${anilistId}&ep=1&type=sub&provider=yuki`;
+    try {
+      const res = await fetch(url, {
+        headers: {
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36",
+          "Referer": `https://anidap.se/watch?id=${anilistId}&ep=1`
+        }
+      });
+      if (!res.ok) {
+        console.warn(`[AniDap] watch.data returned ${res.status} for AniList ID: ${anilistId}`);
+        return null;
+      }
+      const json = await res.json();
+      if (!Array.isArray(json)) return null;
+      
+      const idNum = Number(anilistId);
+      const idStr = String(anilistId);
+      let idIndex = json.indexOf(idNum);
+      if (idIndex === -1) idIndex = json.indexOf(idStr);
+      if (idIndex === -1) return null;
+      
+      let slug = null;
+      json.forEach(item => {
+        if (item && typeof item === 'object' && !Array.isArray(item)) {
+          const resolved = {};
+          for (const [k, v] of Object.entries(item)) {
+            if (typeof v === 'number' && v >= 0 && v < json.length) {
+              resolved[k] = json[v];
+            }
+          }
+          let hasId = false;
+          for (const val of Object.values(resolved)) {
+            if (val === idNum || val === idStr) hasId = true;
+          }
+          if (hasId) {
+            for (const val of Object.values(resolved)) {
+              if (typeof val === 'string' && /^[a-z0-9-]+-[a-z0-9]{5}$/.test(val)) {
+                slug = val;
+              }
+            }
+          }
+        }
+      });
+      
+      if (slug) {
+        await setCache(cacheKey, slug);
+        console.log(`[AniDap] Resolved slug for AniList ID ${anilistId}: ${slug}`);
+        return slug;
+      }
+      return null;
+    } catch (err) {
+      console.error(`[AniDap] Failed to fetch slug for AniList ID ${anilistId}:`, err.message);
+      return null;
+    }
+  });
+}
+
+export async function getAnidapEpisodes(anilistId, isDub = false, aniListEpisodes = 0) {
+  const cacheKey = getCacheKey("anidap_eps", `${anilistId}_${isDub}`);
+  const cached = await getCache(cacheKey);
+  if (cached) return cached;
+  
+  return deduplicateRequest(cacheKey, async () => {
+    const doubleCheck = await getCache(cacheKey);
+    if (doubleCheck) return doubleCheck;
+    
+    let count = aniListEpisodes || 0;
+    
+    if (!count) {
+      const url = `https://anidap.se/watch.data?id=${anilistId}&ep=1&type=${isDub ? 'dub' : 'sub'}&provider=yuki`;
+      try {
+        const res = await fetch(url, {
+          headers: {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36",
+            "Referer": `https://anidap.se/watch?id=${anilistId}&ep=1`
+          }
+        });
+        if (res.ok) {
+          const json = await res.json();
+          if (Array.isArray(json)) {
+            const idNum = Number(anilistId);
+            const idStr = String(anilistId);
+            json.forEach(item => {
+              if (item && typeof item === 'object' && !Array.isArray(item)) {
+                const resolved = {};
+                for (const [k, v] of Object.entries(item)) {
+                  if (typeof v === 'number' && v >= 0 && v < json.length) {
+                    resolved[k] = json[v];
+                  }
+                }
+                let hasId = false;
+                for (const val of Object.values(resolved)) {
+                  if (val === idNum || val === idStr) hasId = true;
+                }
+                if (hasId) {
+                  for (const val of Object.values(resolved)) {
+                    if (typeof val === 'number' && val > 0 && val < 3000) {
+                      if (val > count) count = val;
+                    }
+                  }
+                }
+              }
+            });
+          }
+        }
+      } catch (e) {
+        console.warn(`[AniDap] Error resolving dynamic episode count for AniList ID ${anilistId}:`, e.message);
+      }
+    }
+    
+    if (!count) {
+      count = 1;
+    }
+    
+    const episodes = [];
+    const typeStr = isDub ? "dub" : "sub";
+    for (let i = 1; i <= count; i++) {
+      episodes.push({
+        number: i,
+        slug: `anidap-${anilistId}-${i}-${typeStr}`
+      });
+    }
+    
+    if (episodes.length > 0) {
+      await setCache(cacheKey, episodes);
+    }
+    return episodes;
+  });
+}
+
+export async function extractAnidapStream(embedUrl) {
+  const cacheKey = getCacheKey("anidap_stream", embedUrl);
+  const cached = await getCache(cacheKey);
+  if (cached) return cached;
+  
+  return deduplicateRequest(cacheKey, async () => {
+    const doubleCheck = await getCache(cacheKey);
+    if (doubleCheck) return doubleCheck;
+    
+    try {
+      const urlObj = new URL(embedUrl);
+      const anilistId = urlObj.searchParams.get("id");
+      const epNum = urlObj.searchParams.get("ep") || "1";
+      const type = urlObj.searchParams.get("type") || "sub";
+      
+      if (!anilistId) throw new Error("Missing AniList ID in embedUrl");
+      
+      const slug = await getAnidapSlug(anilistId);
+      if (!slug) throw new Error(`Could not resolve AniDap slug for AniList ID: ${anilistId}`);
+      
+      const sourcesUrl = `https://chad.anidap.se/rest/api/sources?id=${slug}&epNum=${epNum}&type=${type}&providerId=yuki`;
+      const res = await fetch(sourcesUrl, {
+        headers: {
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36",
+          "Referer": "https://anidap.se/"
+        }
+      });
+      
+      if (!res.ok) {
+        throw new Error(`sources API returned status ${res.status}`);
+      }
+      
+      const data = await res.json();
+      if (!data.sources || data.sources.length === 0) {
+        throw new Error("No sources found in AniDap API response");
+      }
+      
+      const directUrl = data.sources[0].url;
+      
+      let hex = "";
+      for (let i = 0; i < directUrl.length; i++) {
+        const code = directUrl.charCodeAt(i) ^ 137;
+        hex += code.toString(16).padStart(2, "0");
+      }
+      const proxiedUrl = `https://crs.24stream.xyz/media/${hex}&origin=https%3A%2F%2Fmegaplay.buzz`;
+      
+      const result = {
+        directUrl: proxiedUrl,
+        type: "hls"
+      };
+      
+      await setCache(cacheKey, result);
+      return result;
+    } catch (err) {
+      console.error("[AniDap] extractAnidapStream error:", err.message);
+      return null;
+    }
+  });
 }

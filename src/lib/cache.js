@@ -2,6 +2,62 @@ import { Storage } from "@google-cloud/storage";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
+import { createHash } from "node:crypto";
+
+// ─── In-Memory LRU Cache (L1) ───────────────────────────────────────────────
+// Fast first-layer cache that eliminates GCS/filesystem round-trips for hot data.
+// Uses a Map with LRU eviction — Map preserves insertion order, so we delete+re-set
+// on access to move items to the "most recently used" end.
+
+const LRU_MAX_SIZE = 500;
+const memoryCache = new Map(); // key → { data, expiresAt }
+
+let cacheStats = { memHit: 0, memMiss: 0, l2Hit: 0, l2Miss: 0 };
+
+function lruGet(key) {
+  const entry = memoryCache.get(key);
+  if (!entry) {
+    cacheStats.memMiss++;
+    return undefined;
+  }
+  if (Date.now() > entry.expiresAt) {
+    memoryCache.delete(key);
+    cacheStats.memMiss++;
+    return undefined;
+  }
+  // Move to end (most recently used)
+  memoryCache.delete(key);
+  memoryCache.set(key, entry);
+  cacheStats.memHit++;
+  return entry.data;
+}
+
+function lruSet(key, data, ttlMs) {
+  // Evict oldest entries if at capacity
+  if (memoryCache.size >= LRU_MAX_SIZE) {
+    // Map.keys().next() gives the oldest (least recently used) key
+    const oldestKey = memoryCache.keys().next().value;
+    memoryCache.delete(oldestKey);
+  }
+  memoryCache.set(key, { data, expiresAt: Date.now() + ttlMs });
+}
+
+// Log cache stats every 5 minutes (non-blocking)
+if (typeof setInterval !== "undefined") {
+  setInterval(() => {
+    const total = cacheStats.memHit + cacheStats.memMiss;
+    if (total > 0) {
+      const hitRate = ((cacheStats.memHit / total) * 100).toFixed(1);
+      console.log(
+        `[Cache Stats] Memory: ${cacheStats.memHit} hits / ${cacheStats.memMiss} misses (${hitRate}% hit rate) | L2: ${cacheStats.l2Hit} hits / ${cacheStats.l2Miss} misses | LRU size: ${memoryCache.size}`
+      );
+    }
+    // Reset stats each interval
+    cacheStats = { memHit: 0, memMiss: 0, l2Hit: 0, l2Miss: 0 };
+  }, 5 * 60 * 1000);
+}
+
+// ─── GCS Backend (L2) ───────────────────────────────────────────────────────
 
 let gcsBucket = null;
 
@@ -48,9 +104,9 @@ if (!gcsBucket) {
   }
 }
 
-import { createHash } from "node:crypto";
+// ─── Default TTL ─────────────────────────────────────────────────────────────
 
-const CACHE_TTL = 6 * 60 * 60 * 1000; // 6 hours in ms
+const DEFAULT_CACHE_TTL = 6 * 60 * 60 * 1000; // 6 hours in ms
 
 /**
  * Returns clean cache key slug
@@ -62,8 +118,22 @@ export function getCacheKey(prefix, val) {
 
 /**
  * Retrieve cached JSON data (async)
+ * Checks L1 (memory) first, then L2 (GCS/filesystem).
+ * On L2 hit, promotes to L1 for future fast access.
+ * 
+ * @param {string} key - Cache key
+ * @param {number} [ttlMs] - Optional TTL override for L2 expiry check (defaults to 6h)
  */
-export async function getCache(key) {
+export async function getCache(key, ttlMs = DEFAULT_CACHE_TTL) {
+  // L1: In-memory LRU
+  const memResult = lruGet(key);
+  if (memResult !== undefined) {
+    return memResult;
+  }
+
+  // L2: GCS or filesystem
+  let l2Data = null;
+
   if (gcsBucket) {
     try {
       const file = gcsBucket.file(`${key}.json`);
@@ -71,57 +141,72 @@ export async function getCache(key) {
       if (exists) {
         const [metadata] = await file.getMetadata();
         const updatedTime = new Date(metadata.updated).getTime();
-        const isExpired = Date.now() - updatedTime > CACHE_TTL;
+        const isExpired = Date.now() - updatedTime > ttlMs;
         
         if (!isExpired) {
-          console.log(`[Cache] GCS cache hit for key: ${key}`);
           const [content] = await file.download();
-          return JSON.parse(content.toString("utf-8"));
+          l2Data = JSON.parse(content.toString("utf-8"));
+          cacheStats.l2Hit++;
         } else {
-          console.log(`[Cache] GCS item expired for key: ${key}`);
+          cacheStats.l2Miss++;
           file.delete().catch(() => {}); // cleanup in background
         }
       } else {
-        console.log(`[Cache] GCS cache miss for key: ${key}`);
+        cacheStats.l2Miss++;
       }
     } catch (e) {
       console.warn("[Cache] Error reading GCS cache for key:", key, e.message);
+      cacheStats.l2Miss++;
     }
-    return null;
+  } else {
+    // Filesystem fallback
+    try {
+      const filePath = path.join(CACHE_DIR, `${key}.json`);
+      if (fs.existsSync(filePath)) {
+        const stats = fs.statSync(filePath);
+        const isExpired = Date.now() - stats.mtimeMs > ttlMs;
+        if (!isExpired) {
+          const data = fs.readFileSync(filePath, "utf-8");
+          l2Data = JSON.parse(data);
+          cacheStats.l2Hit++;
+        } else {
+          cacheStats.l2Miss++;
+          try {
+            fs.unlinkSync(filePath);
+          } catch (_) {}
+        }
+      } else {
+        cacheStats.l2Miss++;
+      }
+    } catch (e) {
+      console.warn("[Cache] Error reading file cache for key:", key, e.message);
+      cacheStats.l2Miss++;
+    }
   }
 
-  // Filesystem fallback
-  try {
-    const filePath = path.join(CACHE_DIR, `${key}.json`);
-    if (fs.existsSync(filePath)) {
-      const stats = fs.statSync(filePath);
-      const isExpired = Date.now() - stats.mtimeMs > CACHE_TTL;
-      if (!isExpired) {
-        console.log(`[Cache] File cache hit for key: ${key}`);
-        const data = fs.readFileSync(filePath, "utf-8");
-        return JSON.parse(data);
-      } else {
-        console.log(`[Cache] File cache expired for key: ${key}`);
-        try {
-          fs.unlinkSync(filePath);
-        } catch (_) {}
-      }
-    } else {
-      console.log(`[Cache] File cache miss for key: ${key}`);
-    }
-  } catch (e) {
-    console.warn("[Cache] Error reading file cache for key:", key, e.message);
+  // Promote L2 hit to L1
+  if (l2Data !== null) {
+    lruSet(key, l2Data, ttlMs);
   }
-  return null;
+
+  return l2Data;
 }
 
 /**
  * Store JSON data to cache (async)
+ * Writes to both L1 (memory) and L2 (GCS/filesystem).
+ * 
+ * @param {string} key - Cache key
+ * @param {*} val - Data to cache (must be JSON-serializable)
+ * @param {number} [ttlMs] - Optional TTL override (defaults to 6h)
  */
-export async function setCache(key, val) {
+export async function setCache(key, val, ttlMs = DEFAULT_CACHE_TTL) {
+  // L1: Always write to memory
+  lruSet(key, val, ttlMs);
+
+  // L2: GCS or filesystem
   if (gcsBucket) {
     try {
-      console.log(`[Cache] Writing cache to GCS for key: ${key}`);
       const file = gcsBucket.file(`${key}.json`);
       await file.save(JSON.stringify(val), {
         contentType: "application/json",
@@ -135,7 +220,6 @@ export async function setCache(key, val) {
 
   // Filesystem fallback
   try {
-    console.log(`[Cache] Writing cache to file for key: ${key}`);
     const filePath = path.join(CACHE_DIR, `${key}.json`);
     fs.writeFileSync(filePath, JSON.stringify(val), "utf-8");
   } catch (e) {

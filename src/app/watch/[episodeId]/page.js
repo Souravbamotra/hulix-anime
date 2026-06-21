@@ -5,11 +5,12 @@ import Navbar from "@/components/Navbar";
 import WatchPlayer from "@/components/WatchPlayer";
 import EpisodesList from "@/components/EpisodesList";
 import { getAnimeDetails } from "@/lib/anilist";
-import { findGogoAnimeSlug, getAnimeEpisodes, getEpisodeServers, findRareAnimesSlug, getRareAnimesEpisodes } from "@/lib/scraper";
+import { findGogoAnimeSlug, getAnimeEpisodes, getEpisodeServers, findRareAnimesSlug, getRareAnimesEpisodes, getAnidapEpisodes } from "@/lib/scraper";
+import { fetchFillerList, getFillerSlug } from "@/lib/filler";
 
-export const revalidate = 0; // Dynamic streaming page, do not cache
+export const revalidate = 300; // Cache for 5 minutes (ISR)
 
-const getEpisodesCached = cache(async (romaji, english, format) => {
+const getEpisodesCached = cache(async (romaji, english, format, anilistId, totalEpisodes) => {
   try {
     const [gogoSubSlug, gogoDubSlug, rareSlug] = await Promise.all([
       findGogoAnimeSlug(romaji, english, format, false),
@@ -17,11 +18,48 @@ const getEpisodesCached = cache(async (romaji, english, format) => {
       findRareAnimesSlug(romaji, english, format)
     ]);
     
-    const [gogoSubEpisodes, gogoDubEpisodes, rareEpisodes] = await Promise.all([
+    let [gogoSubEpisodes, gogoDubEpisodes, rareEpisodes] = await Promise.all([
       gogoSubSlug ? getAnimeEpisodes(gogoSubSlug) : Promise.resolve([]),
       gogoDubSlug ? getAnimeEpisodes(gogoDubSlug) : Promise.resolve([]),
       rareSlug ? getRareAnimesEpisodes(rareSlug) : Promise.resolve([])
     ]);
+    
+    // Validate GogoAnime episodes count
+    const cleanRomaji = (romaji || "").toLowerCase();
+    const cleanEnglish = (english || "").toLowerCase();
+    const isCombined = ["one piece", "black clover", "detective conan", "pokemon", "fairy tail", "doraemon"].some(
+      t => cleanRomaji.includes(t) || cleanEnglish.includes(t)
+    );
+    
+    if (totalEpisodes && !isCombined) {
+      if (gogoSubEpisodes.length > totalEpisodes) {
+        console.warn(`[Watch Page] Rejecting GogoAnime sub episodes due to mismatch (expected ${totalEpisodes}, got ${gogoSubEpisodes.length})`);
+        gogoSubEpisodes = [];
+      }
+      if (gogoDubEpisodes.length > totalEpisodes) {
+        console.warn(`[Watch Page] Rejecting GogoAnime dub episodes due to mismatch (expected ${totalEpisodes}, got ${gogoDubEpisodes.length})`);
+        gogoDubEpisodes = [];
+      }
+    }
+
+    // AniDap Fallback integration (AniDap uses AniList ID for 'id' parameter)
+    const subCount = gogoSubEpisodes.length;
+    if (anilistId && (subCount === 0 || (totalEpisodes && subCount < totalEpisodes))) {
+      console.log(`[Watch Page] GogoAnime sub episodes count (${subCount}) is less than expected (${totalEpisodes}). Fetching AniDap fallback for AniList ID: ${anilistId}`);
+      const anidapSub = await getAnidapEpisodes(anilistId, false, totalEpisodes);
+      if (anidapSub && anidapSub.length > subCount) {
+        gogoSubEpisodes = anidapSub;
+      }
+    }
+    
+    const dubCount = gogoDubEpisodes.length;
+    if (anilistId && (dubCount === 0 || (totalEpisodes && dubCount < totalEpisodes))) {
+      console.log(`[Watch Page] GogoAnime dub episodes count (${dubCount}) is less than expected (${totalEpisodes}). Fetching AniDap fallback for AniList ID: ${anilistId}`);
+      const anidapDub = await getAnidapEpisodes(anilistId, true, totalEpisodes);
+      if (anidapDub && anidapDub.length > dubCount) {
+        gogoDubEpisodes = anidapDub;
+      }
+    }
     
     return {
       sub: gogoSubEpisodes,
@@ -35,7 +73,7 @@ const getEpisodesCached = cache(async (romaji, english, format) => {
 });
 
 async function WatchControls({ media, episodeId }) {
-  const { sub, engDub, hindiDub } = await getEpisodesCached(media.title.romaji, media.title.english, media.format);
+  const { sub, engDub, hindiDub } = await getEpisodesCached(media.title.romaji, media.title.english, media.format, media.id, media.episodes);
   const isHindiDub = episodeId.startsWith("rareanimes-");
   // Determine which episode list the current episode belongs to
   let episodes = sub;
@@ -82,8 +120,8 @@ async function WatchControls({ media, episodeId }) {
   );
 }
 
-async function EpisodesSidebar({ media, episodeId }) {
-  const { sub, engDub, hindiDub } = await getEpisodesCached(media.title.romaji, media.title.english, media.format);
+async function EpisodesSidebar({ media, episodeId, fillerList }) {
+  const { sub, engDub, hindiDub } = await getEpisodesCached(media.title.romaji, media.title.english, media.format, media.idMal, media.episodes);
   
   return (
     <EpisodesList
@@ -92,7 +130,47 @@ async function EpisodesSidebar({ media, episodeId }) {
       hindiDubEpisodes={hindiDub}
       animeId={media.id}
       currentEpisodeId={episodeId}
+      fillerList={fillerList}
       variant="sidebar"
+    />
+  );
+}
+
+// Async component that resolves episode context and renders the player
+// Runs inside Suspense so it doesn't block the page shell from rendering
+async function WatchPlayerSection({ media, episodeId, serverData, fillerList }) {
+  const { sub, engDub, hindiDub } = await getEpisodesCached(media.title.romaji, media.title.english, media.format, media.idMal, media.episodes);
+  const isHindiDub = episodeId.startsWith("rareanimes-");
+  let episodes = sub;
+  if (isHindiDub) {
+    episodes = hindiDub;
+  } else if (engDub.some(ep => ep.slug === episodeId)) {
+    episodes = engDub;
+  }
+  const currentEpIndex = episodes.findIndex((ep) => ep.slug === episodeId);
+  const nextEp = currentEpIndex >= 0 && currentEpIndex < episodes.length - 1 ? episodes[currentEpIndex + 1] : null;
+
+  const epNumMatch = episodeId.match(/-episode-(\d+(\.\d+)?)/i);
+  const epNumFallback = epNumMatch ? epNumMatch[1] : "";
+  const displayTitle = media.title.english || media.title.romaji;
+  const epLabel = epNumFallback ? `Episode ${epNumFallback}` : "Streaming";
+  const currentEpNumber = currentEpIndex >= 0 ? episodes[currentEpIndex].number : (epNumFallback ? parseFloat(epNumFallback) : 1);
+  const resolvedLang = isHindiDub ? "hindi" : (episodes === engDub ? "dub" : "sub");
+
+  return (
+    <WatchPlayer
+      initialServers={serverData.servers}
+      episodeSlug={episodeId}
+      nextEpisodeSlug={nextEp?.slug}
+      animeId={media.id}
+      malId={media.idMal}
+      animeTitle={displayTitle}
+      animeCover={media.coverImage.large}
+      episodeNumber={currentEpNumber}
+      episodeTitle={epLabel}
+      language={resolvedLang}
+      episodes={episodes}
+      fillerList={fillerList}
     />
   );
 }
@@ -115,8 +193,7 @@ export default async function Watch({ params, searchParams }) {
     );
   }
 
-  // 1. Fetch AniList Metadata and Video Servers in parallel
-  // This is much faster since it skips searching Gogoanime for the full anime!
+  // Fetch AniList metadata + episode servers in parallel — this is all we need to start rendering
   const [media, serverData] = await Promise.all([
     getAnimeDetails(animeId),
     getEpisodeServers(episodeId)
@@ -135,19 +212,11 @@ export default async function Watch({ params, searchParams }) {
     );
   }
 
-  // Get next episode slug for autoplay
-  const { sub, engDub, hindiDub } = await getEpisodesCached(media.title.romaji, media.title.english, media.format);
-  const isHindiDub = episodeId.startsWith("rareanimes-");
-  let episodes = sub;
-  if (isHindiDub) {
-    episodes = hindiDub;
-  } else if (engDub.some(ep => ep.slug === episodeId)) {
-    episodes = engDub;
-  }
-  const currentEpIndex = episodes.findIndex((ep) => ep.slug === episodeId);
-  const nextEp = currentEpIndex >= 0 && currentEpIndex < episodes.length - 1 ? episodes[currentEpIndex + 1] : null;
+  // Fetch filler list if available
+  const fillerSlug = getFillerSlug(media.title.romaji, media.title.english);
+  const fillerList = fillerSlug ? await fetchFillerList(fillerSlug) : {};
 
-  // Try to parse out the episode number from the slug for a quick title update
+  // Parse episode number from slug for immediate title display (no scraping needed)
   const epNumMatch = episodeId.match(/-episode-(\d+(\.\d+)?)/i);
   const epNumFallback = epNumMatch ? epNumMatch[1] : "";
   const displayTitle = media.title.english || media.title.romaji;
@@ -175,12 +244,17 @@ export default async function Watch({ params, searchParams }) {
         <div className="watch-grid">
           {/* Left Column: Player & Meta */}
           <div className="watch-left">
-            <WatchPlayer 
-              initialServers={serverData.servers} 
-              episodeSlug={episodeId} 
-              nextEpisodeSlug={nextEp?.slug}
-              animeId={media.id}
-            />
+            {/* Player — Suspense lets the page shell render immediately while episode list resolves */}
+            <Suspense fallback={
+              <div className="player-placeholder glass-panel">
+                <div className="placeholder-content">
+                  <div className="loading-spinner" />
+                  <p>Loading player...</p>
+                </div>
+              </div>
+            }>
+              <WatchPlayerSection media={media} episodeId={episodeId} serverData={serverData} fillerList={fillerList} />
+            </Suspense>
 
             {/* Navigation & Controls */}
             <Suspense fallback={
@@ -226,7 +300,7 @@ export default async function Watch({ params, searchParams }) {
                 </div>
               </div>
             }>
-              <EpisodesSidebar media={media} episodeId={episodeId} />
+              <EpisodesSidebar media={media} episodeId={episodeId} fillerList={fillerList} />
             </Suspense>
           </div>
         </div>

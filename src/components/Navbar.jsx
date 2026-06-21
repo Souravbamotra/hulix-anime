@@ -10,7 +10,9 @@ export default function Navbar() {
   const [suggestions, setSuggestions] = useState([]);
   const [isOpen, setIsOpen] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [langOpen, setLangOpen] = useState(false);
   const dropdownRef = useRef(null);
+  const langRef = useRef(null);
   const router = useRouter();
 
   // Close dropdown when clicking outside
@@ -18,6 +20,9 @@ export default function Navbar() {
     function handleClickOutside(event) {
       if (dropdownRef.current && !dropdownRef.current.contains(event.target)) {
         setIsOpen(false);
+      }
+      if (langRef.current && !langRef.current.contains(event.target)) {
+        setLangOpen(false);
       }
     }
     document.addEventListener("mousedown", handleClickOutside);
@@ -34,40 +39,11 @@ export default function Navbar() {
     const delayDebounceFn = setTimeout(async () => {
       setLoading(true);
       try {
-        const graphqlQuery = `
-          query ($search: String) {
-            Page(page: 1, perPage: 5) {
-              media(search: $search, type: ANIME, sort: POPULARITY_DESC) {
-                id
-                title {
-                  romaji
-                  english
-                }
-                coverImage {
-                  medium
-                }
-                format
-                seasonYear
-              }
-            }
-          }
-        `;
-
-        const res = await fetch("https://graphql.anilist.co", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Accept: "application/json",
-          },
-          body: JSON.stringify({
-            query: graphqlQuery,
-            variables: { search: query },
-          }),
-        });
+        const res = await fetch(`/api/suggestions?q=${encodeURIComponent(query.trim())}`);
 
         if (res.ok) {
           const data = await res.json();
-          setSuggestions(data.data.Page.media || []);
+          setSuggestions(data.suggestions || []);
           setIsOpen(true);
         }
       } catch (err) {
@@ -100,6 +76,30 @@ export default function Navbar() {
           <Link href="/" className="nav-item">Home</Link>
           <Link href="/search?q=trending" className="nav-item">Trending</Link>
           <Link href="/search?q=popular" className="nav-item">Popular</Link>
+          <Link href="/history" className="nav-item">History</Link>
+
+          {/* Languages dropdown */}
+          <div className="nav-dropdown-wrapper" ref={langRef}>
+            <button
+              className={`nav-dropdown-trigger${langOpen ? ' open' : ''}`}
+              onClick={() => setLangOpen((v) => !v)}
+              aria-expanded={langOpen}
+              aria-haspopup="true"
+            >
+              Languages
+              <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5" style={{ transition: 'transform 0.2s', transform: langOpen ? 'rotate(180deg)' : 'rotate(0deg)' }}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+              </svg>
+            </button>
+            {langOpen && (
+              <div className="nav-dropdown-menu" role="menu">
+                <Link href="/languages/hindi"       className="nav-dropdown-item" onClick={() => setLangOpen(false)}>🇮🇳 Hindi Dubbed</Link>
+                <div className="nav-dropdown-divider" />
+                <Link href="/languages/english-sub" className="nav-dropdown-item" onClick={() => setLangOpen(false)}>🌐 English Sub</Link>
+                <Link href="/languages/english-dub" className="nav-dropdown-item" onClick={() => setLangOpen(false)}>🎙️ English Dub</Link>
+              </div>
+            )}
+          </div>
         </nav>
 
         <div className="search-wrapper" ref={dropdownRef}>

@@ -19,6 +19,23 @@ export async function GET(request) {
     return NextResponse.json({ error: "Missing embedUrl parameter" }, { status: 400 });
   }
 
+  const cacheHeaders = {
+    "Cache-Control": "public, s-maxage=1800, stale-while-revalidate=3600"
+  };
+
+  if (embedUrl.includes("anidap.se") || embedUrl.includes("watch?id=")) {
+    try {
+      const { extractAnidapStream } = await import("@/lib/scraper");
+      const result = await extractAnidapStream(embedUrl);
+      if (!result) {
+        return NextResponse.json({ error: "Failed to extract AniDap stream" }, { status: 404 });
+      }
+      return NextResponse.json(result, { headers: cacheHeaders });
+    } catch (err) {
+      return NextResponse.json({ error: err.message || "Failed to extract stream" }, { status: 500 });
+    }
+  }
+
   if (embedUrl.includes("codedew.com") || embedUrl.includes("razorshell.space") || embedUrl.includes("streambeta") || embedUrl.includes("multiquality")) {
     try {
       const { extractRareAnimesStream } = await import("@/lib/scraper");
@@ -42,7 +59,7 @@ export async function GET(request) {
         }));
       }
 
-      return NextResponse.json(proxiedResult);
+      return NextResponse.json(proxiedResult, { headers: cacheHeaders });
     } catch (err) {
       return NextResponse.json({ error: err.message || "Failed to extract stream" }, { status: 500 });
     }
@@ -80,7 +97,7 @@ export async function GET(request) {
         directUrl,
         thumbnailUrl,
         type,
-      });
+      }, { headers: cacheHeaders });
     }
 
     // Try parsing sources array for multi-quality
@@ -106,7 +123,7 @@ export async function GET(request) {
           thumbnailUrl: imageMatch ? imageMatch[1] : "",
           type: sources[0].type,
           qualities: sources,
-        });
+        }, { headers: cacheHeaders });
       }
     }
 

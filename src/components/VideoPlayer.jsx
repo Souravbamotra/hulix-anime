@@ -2,8 +2,29 @@
 
 import { useEffect, useRef, useState, useCallback } from "react";
 import Hls from "hls.js";
+import {
+  saveWatchEntry,
+  getEpisodeProgress,
+  formatTime
+} from "@/lib/watchHistory";
 
-export default function VideoPlayer({ src, type = "iframe", directUrl, thumbnailUrl, qualities, onEnded }) {
+export default function VideoPlayer({
+  src,
+  type = "iframe",
+  directUrl,
+  thumbnailUrl,
+  qualities,
+  onEnded,
+  // Watch history props:
+  animeId,
+  malId,
+  animeTitle,
+  animeCover,
+  episodeId,
+  episodeNumber,
+  episodeTitle,
+  language
+}) {
   const videoRef = useRef(null);
   const containerRef = useRef(null);
   const hlsRef = useRef(null);
@@ -20,8 +41,16 @@ export default function VideoPlayer({ src, type = "iframe", directUrl, thumbnail
   const [buffered, setBuffered] = useState(0);
   const [isLoading, setIsLoading] = useState(false);
 
+  // Watch history states
+  const [resumeInfo, setResumeInfo] = useState(null);
+  const [showResumePrompt, setShowResumePrompt] = useState(false);
+
   // Auto Next state
   const [autoNext, setAutoNext] = useState(true);
+
+  // AniSkip state (Hindi dub only)
+  const [skipTimes, setSkipTimes]   = useState(null); // { intro?: {start,end}, outro?: {start,end} }
+  const [activeSkip, setActiveSkip] = useState(null); // 'intro' | 'outro' | null
 
   // Sync autoNext state with localStorage on mount
   useEffect(() => {
@@ -32,6 +61,31 @@ export default function VideoPlayer({ src, type = "iframe", directUrl, thumbnail
       }
     }
   }, []);
+
+  // Fetch AniSkip timestamps — only for Hindi dub
+  useEffect(() => {
+    if (language !== "hindi" || !malId || !episodeNumber) return;
+    fetch(
+      `https://api.aniskip.com/v2/skip-times/${malId}/${episodeNumber}?types[]=op&types[]=ed&episodeLength=0`
+    )
+      .then((res) => res.json())
+      .then((data) => {
+        if (!data.found || !data.results) return;
+        const times = {};
+        data.results.forEach((r) => {
+          if (r.skipType === "op") times.intro = { start: r.interval.startTime, end: r.interval.endTime };
+          if (r.skipType === "ed") times.outro = { start: r.interval.startTime, end: r.interval.endTime };
+        });
+        setSkipTimes(times);
+      })
+      .catch(() => {});
+  }, [malId, episodeNumber, language]);
+
+  // Reset skip times when episode changes
+  useEffect(() => {
+    setSkipTimes(null);
+    setActiveSkip(null);
+  }, [episodeId]);
 
   const handleAutoNextToggle = () => {
     const newVal = !autoNext;
@@ -57,15 +111,96 @@ export default function VideoPlayer({ src, type = "iframe", directUrl, thumbnail
   const [currentQuality, setCurrentQuality] = useState(-1); // -1 = auto for HLS
   const [showQualityMenu, setShowQualityMenu] = useState(false);
 
+  // Refs for auto-hide state sync (declared after state initialization)
+  const isPlayingRef = useRef(isPlaying);
+  const showQualityMenuRef = useRef(showQualityMenu);
+  const isHoveringControlsRef = useRef(false);
+  const timerRef = useRef(null);
+
+  useEffect(() => {
+    isPlayingRef.current = isPlaying;
+  }, [isPlaying]);
+
+  useEffect(() => {
+    showQualityMenuRef.current = showQualityMenu;
+  }, [showQualityMenu]);
+
   // Determine if we should use native video (direct URL available)
   const useNativePlayer = Boolean(directUrl);
   const isHls = type === "hls" || directUrl?.includes(".m3u8");
+
+  // Save progress to localStorage
+  const saveProgress = useCallback(() => {
+    const video = videoRef.current;
+    if (!video || !video.duration || video.duration === Infinity) return;
+    const progress = Math.round((video.currentTime / video.duration) * 100);
+    
+    // Guard against missing metadata
+    if (!animeId || !episodeId) return;
+
+    saveWatchEntry({
+      animeId,
+      animeTitle: animeTitle || "Unknown Anime",
+      animeCover: animeCover || "",
+      episodeId,
+      episodeNumber: episodeNumber || 1,
+      episodeTitle: episodeTitle || "Episode 1",
+      language: language || "sub",
+      timestamp: Math.floor(video.currentTime),
+      duration: Math.floor(video.duration),
+      progress,
+      completed: progress > 85,
+      watchedAt: new Date().toISOString(),
+    });
+  }, [animeId, animeTitle, animeCover, episodeId, episodeNumber, episodeTitle, language]);
+
+  // Check for saved progress on mount
+  useEffect(() => {
+    if (!episodeId || !language) return;
+    const saved = getEpisodeProgress(episodeId, language);
+    if (saved && saved.timestamp > 10 && !saved.completed) {
+      setResumeInfo(saved);
+      setShowResumePrompt(true);
+    } else {
+      setShowResumePrompt(false);
+      setResumeInfo(null);
+    }
+  }, [episodeId, language]);
+
+  // Handle baseline save for iframe players (since progress cannot be tracked in third-party iframes)
+  useEffect(() => {
+    if (useNativePlayer || !src) return;
+
+    if (animeId && episodeId) {
+      const existing = getEpisodeProgress(episodeId, language);
+      if (!existing) {
+        saveWatchEntry({
+          animeId,
+          animeTitle: animeTitle || "Unknown Anime",
+          animeCover: animeCover || "",
+          episodeId,
+          episodeNumber: episodeNumber || 1,
+          episodeTitle: episodeTitle || "Episode 1",
+          language: language || "sub",
+          timestamp: 0,
+          duration: 0,
+          progress: 10, // 10% progress baseline so it registers as in-progress and shows in rows/detail grids
+          completed: false,
+          watchedAt: new Date().toISOString(),
+        });
+      }
+    }
+  }, [useNativePlayer, src, animeId, episodeId, animeTitle, animeCover, episodeNumber, episodeTitle, language]);
 
   // --- HLS Setup ---
   useEffect(() => {
     if (!useNativePlayer || !isHls) return;
     const video = videoRef.current;
     if (!video || !directUrl) return;
+
+    // Synchronously check if resume prompt will be shown to determine autoplay
+    const saved = getEpisodeProgress(episodeId, language);
+    const hasResume = saved && saved.timestamp > 10 && !saved.completed;
 
     if (Hls.isSupported()) {
       const hls = new Hls({
@@ -86,9 +221,28 @@ export default function VideoPlayer({ src, type = "iframe", directUrl, thumbnail
           height: level.height,
           index: idx,
         }));
-        // Add "Auto" option
-        setAvailableQualities([{ label: "Auto", index: -1 }, ...levels]);
-        setCurrentQuality(-1);
+        
+        const nextQualities = [{ label: "Auto", index: -1 }, ...levels];
+        setAvailableQualities(nextQualities);
+
+        // Retrieve preferred quality
+        let preferred = "Auto";
+        if (typeof window !== "undefined") {
+          preferred = localStorage.getItem("hulix-preferred-quality") || "Auto";
+        }
+        
+        const matchedLevel = nextQualities.find((q) => q.label === preferred);
+        if (matchedLevel) {
+          hls.currentLevel = matchedLevel.index;
+          setCurrentQuality(matchedLevel.index);
+        } else {
+          hls.currentLevel = -1;
+          setCurrentQuality(-1);
+        }
+
+        if (!hasResume) {
+          video.play().catch(() => {});
+        }
       });
 
       hls.on(Hls.Events.ERROR, (_, data) => {
@@ -104,8 +258,11 @@ export default function VideoPlayer({ src, type = "iframe", directUrl, thumbnail
       };
     } else if (video.canPlayType("application/vnd.apple.mpegurl")) {
       video.src = directUrl;
+      if (!hasResume) {
+        video.play().catch(() => {});
+      }
     }
-  }, [directUrl, isHls, useNativePlayer]);
+  }, [directUrl, isHls, useNativePlayer, episodeId, language]);
 
   // --- Direct MP4 Setup ---
   useEffect(() => {
@@ -113,7 +270,14 @@ export default function VideoPlayer({ src, type = "iframe", directUrl, thumbnail
     const video = videoRef.current;
     if (!video || !directUrl) return;
     video.src = directUrl;
-  }, [directUrl, isHls, useNativePlayer]);
+
+    const saved = getEpisodeProgress(episodeId, language);
+    const hasResume = saved && saved.timestamp > 10 && !saved.completed;
+
+    if (!hasResume) {
+      video.play().catch(() => {});
+    }
+  }, [directUrl, isHls, useNativePlayer, episodeId, language]);
 
   // --- Video Event Listeners ---
   useEffect(() => {
@@ -121,18 +285,42 @@ export default function VideoPlayer({ src, type = "iframe", directUrl, thumbnail
     const video = videoRef.current;
     if (!video) return;
 
-    const handlePlay = () => setIsPlaying(true);
-    const handlePause = () => setIsPlaying(false);
+    const handlePlay = () => {
+      setIsPlaying(true);
+      if (progressTimerRef.current) clearInterval(progressTimerRef.current);
+      progressTimerRef.current = setInterval(saveProgress, 5000);
+    };
+    const handlePause = () => {
+      setIsPlaying(false);
+      if (progressTimerRef.current) {
+        clearInterval(progressTimerRef.current);
+        progressTimerRef.current = null;
+      }
+      saveProgress();
+    };
     const handleLoadedMeta = () => setDuration(video.duration);
     const handleTimeUpdate = () => {
-      setCurrentTime(video.currentTime);
+      const t = video.currentTime;
+      setCurrentTime(t);
       if (video.buffered.length > 0) {
         setBuffered(video.buffered.end(video.buffered.length - 1));
+      }
+      // Update active skip button
+      if (skipTimes) {
+        const { intro, outro } = skipTimes;
+        if (intro && t >= intro.start && t < intro.end) {
+          setActiveSkip("intro");
+        } else if (outro && t >= outro.start && t < outro.end) {
+          setActiveSkip("outro");
+        } else {
+          setActiveSkip(null);
+        }
       }
     };
     const handleWaiting = () => setIsLoading(true);
     const handleCanPlay = () => setIsLoading(false);
     const handleEnded = () => {
+      saveProgress();
       if (autoNextRef.current && onEndedRef.current) {
         onEndedRef.current();
       }
@@ -147,6 +335,8 @@ export default function VideoPlayer({ src, type = "iframe", directUrl, thumbnail
     video.addEventListener("ended", handleEnded);
 
     return () => {
+      saveProgress();
+      if (progressTimerRef.current) clearInterval(progressTimerRef.current);
       video.removeEventListener("play", handlePlay);
       video.removeEventListener("pause", handlePause);
       video.removeEventListener("loadedmetadata", handleLoadedMeta);
@@ -155,35 +345,41 @@ export default function VideoPlayer({ src, type = "iframe", directUrl, thumbnail
       video.removeEventListener("canplay", handleCanPlay);
       video.removeEventListener("ended", handleEnded);
     };
-  }, [useNativePlayer]);
+  }, [useNativePlayer, saveProgress, skipTimes]);
+
+  const resetTimer = useCallback(() => {
+    setShowControls(true);
+    if (timerRef.current) {
+      clearTimeout(timerRef.current);
+    }
+    timerRef.current = setTimeout(() => {
+      if (isPlayingRef.current && !showQualityMenuRef.current && !isHoveringControlsRef.current) {
+        setShowControls(false);
+      }
+    }, 3000);
+  }, []);
 
   // --- Controls auto-hide ---
   useEffect(() => {
     if (!useNativePlayer) return;
-    let timer;
-    const resetTimer = () => {
-      setShowControls(true);
-      clearTimeout(timer);
-      timer = setTimeout(() => {
-        if (isPlaying) setShowControls(false);
-      }, 3000);
-    };
 
     const container = containerRef.current;
     if (container) {
       container.addEventListener("mousemove", resetTimer);
       container.addEventListener("touchstart", resetTimer);
+      container.addEventListener("click", resetTimer);
     }
     resetTimer();
 
     return () => {
-      clearTimeout(timer);
+      if (timerRef.current) clearTimeout(timerRef.current);
       if (container) {
         container.removeEventListener("mousemove", resetTimer);
         container.removeEventListener("touchstart", resetTimer);
+        container.removeEventListener("click", resetTimer);
       }
     };
-  }, [isPlaying, useNativePlayer]);
+  }, [useNativePlayer, resetTimer]);
 
   // --- Fullscreen change listener ---
   useEffect(() => {
@@ -240,9 +436,15 @@ export default function VideoPlayer({ src, type = "iframe", directUrl, thumbnail
     if (hlsRef.current) {
       hlsRef.current.currentLevel = qualityIndex;
       setCurrentQuality(qualityIndex);
+
+      // Save preferred quality label to localStorage
+      const found = availableQualities.find((q) => q.index === qualityIndex);
+      if (found) {
+        localStorage.setItem("hulix-preferred-quality", found.label);
+      }
     }
     setShowQualityMenu(false);
-  }, []);
+  }, [availableQualities]);
 
   const skip = useCallback((seconds) => {
     const video = videoRef.current;
@@ -254,7 +456,6 @@ export default function VideoPlayer({ src, type = "iframe", directUrl, thumbnail
     if (!useNativePlayer) return;
 
     const handleKeyDown = (e) => {
-      // Don't trigger shortcuts if user is typing in an input/textarea
       const activeEl = document.activeElement;
       if (activeEl && (activeEl.tagName === "INPUT" || activeEl.tagName === "TEXTAREA")) {
         return;
@@ -267,17 +468,17 @@ export default function VideoPlayer({ src, type = "iframe", directUrl, thumbnail
         case " ":
           e.preventDefault();
           togglePlay();
-          setShowControls(true);
+          resetTimer();
           break;
         case "ArrowRight":
           e.preventDefault();
           skip(10);
-          setShowControls(true);
+          resetTimer();
           break;
         case "ArrowLeft":
           e.preventDefault();
           skip(-10);
-          setShowControls(true);
+          resetTimer();
           break;
         case "ArrowUp":
           e.preventDefault();
@@ -285,7 +486,7 @@ export default function VideoPlayer({ src, type = "iframe", directUrl, thumbnail
           video.volume = newVolUp;
           setVolume(newVolUp);
           setIsMuted(newVolUp === 0);
-          setShowControls(true);
+          resetTimer();
           break;
         case "ArrowDown":
           e.preventDefault();
@@ -293,7 +494,7 @@ export default function VideoPlayer({ src, type = "iframe", directUrl, thumbnail
           video.volume = newVolDown;
           setVolume(newVolDown);
           setIsMuted(newVolDown === 0);
-          setShowControls(true);
+          resetTimer();
           break;
         case "f":
         case "F":
@@ -304,7 +505,7 @@ export default function VideoPlayer({ src, type = "iframe", directUrl, thumbnail
         case "M":
           e.preventDefault();
           toggleMute();
-          setShowControls(true);
+          resetTimer();
           break;
         default:
           break;
@@ -317,8 +518,67 @@ export default function VideoPlayer({ src, type = "iframe", directUrl, thumbnail
     };
   }, [useNativePlayer, togglePlay, skip, toggleFullscreen, toggleMute]);
 
-  // Format time helper
-  const formatTime = (t) => {
+  // Resume from saved timestamp
+  const handleResume = (e) => {
+    if (e) e.stopPropagation();
+    if (videoRef.current && resumeInfo) {
+      const video = videoRef.current;
+      const targetTime = resumeInfo.timestamp;
+
+      const performSeekAndPlay = () => {
+        if (video.readyState >= 3) {
+          video.currentTime = targetTime;
+          video.play().catch((err) => console.warn("Play failed after seeking:", err));
+        } else {
+          try {
+            video.currentTime = targetTime;
+          } catch (err) {}
+          const onCanPlay = () => {
+            if (Math.abs(video.currentTime - targetTime) > 2) {
+              video.currentTime = targetTime;
+            }
+            video.play().catch((err) => console.warn("Play failed on canplay:", err));
+            video.removeEventListener("canplay", onCanPlay);
+          };
+          video.addEventListener("canplay", onCanPlay);
+          video.play().catch(() => {});
+        }
+      };
+
+      performSeekAndPlay();
+    }
+    setShowResumePrompt(false);
+  };
+
+  // Start from beginning
+  const handleStartOver = (e) => {
+    if (e) e.stopPropagation();
+    if (videoRef.current) {
+      const video = videoRef.current;
+      const performSeekAndPlay = () => {
+        if (video.readyState >= 3) {
+          video.currentTime = 0;
+          video.play().catch(() => {});
+        } else {
+          try {
+            video.currentTime = 0;
+          } catch (err) {}
+          const onCanPlay = () => {
+            video.currentTime = 0;
+            video.play().catch(() => {});
+            video.removeEventListener("canplay", onCanPlay);
+          };
+          video.addEventListener("canplay", onCanPlay);
+          video.play().catch(() => {});
+        }
+      };
+      performSeekAndPlay();
+    }
+    setShowResumePrompt(false);
+  };
+
+  // Helper formatting function
+  const helperFormatTime = (t) => {
     if (!t || isNaN(t)) return "0:00";
     const m = Math.floor(t / 60);
     const s = Math.floor(t % 60);
@@ -347,7 +607,6 @@ export default function VideoPlayer({ src, type = "iframe", directUrl, thumbnail
         ref={containerRef}
         className={`video-player-container glass-panel custom-player ${showControls ? "show-controls" : ""}`}
         onClick={(e) => {
-          // Only toggle play if clicking the video area, not controls
           if (e.target === videoRef.current || e.target.classList.contains("custom-player-overlay")) {
             togglePlay();
           }
@@ -369,7 +628,7 @@ export default function VideoPlayer({ src, type = "iframe", directUrl, thumbnail
         )}
 
         {/* Big Play Button (when paused) */}
-        {!isPlaying && !isLoading && (
+        {!isPlaying && !isLoading && !showResumePrompt && (
           <div className="custom-player-overlay play-overlay" onClick={togglePlay}>
             <button className="big-play-btn" aria-label="Play">
               <svg viewBox="0 0 24 24" fill="currentColor" width="64" height="64">
@@ -379,9 +638,77 @@ export default function VideoPlayer({ src, type = "iframe", directUrl, thumbnail
           </div>
         )}
 
+        {/* Resume prompt overlay */}
+        {showResumePrompt && resumeInfo && (
+          <div className="resume-prompt-overlay">
+            <div className="resume-prompt-modal">
+              <p className="resume-prompt-title">Continue watching?</p>
+              <p className="resume-prompt-time">
+                You stopped at <span className="logo-highlight">{formatTime(resumeInfo.timestamp)}</span>
+              </p>
+              <div className="resume-actions-container">
+                <button
+                  onClick={(e) => handleStartOver(e)}
+                  className="glow-btn-secondary resume-btn-startover"
+                >
+                  Start over
+                </button>
+                <button
+                  onClick={(e) => handleResume(e)}
+                  className="glow-btn resume-btn-resume"
+                >
+                  Resume
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ── Skip Intro / Skip Outro (Hindi dub only, from AniSkip) ── */}
+        {activeSkip === "intro" && skipTimes?.intro && (
+          <button
+            className="skip-segment-btn"
+            onClick={(e) => {
+              e.stopPropagation();
+              const video = videoRef.current;
+              if (video) video.currentTime = skipTimes.intro.end;
+              setActiveSkip(null);
+            }}
+          >
+            <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16">
+              <path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/>
+            </svg>
+            Skip Intro
+          </button>
+        )}
+        {activeSkip === "outro" && skipTimes?.outro && (
+          <button
+            className="skip-segment-btn"
+            onClick={(e) => {
+              e.stopPropagation();
+              const video = videoRef.current;
+              if (video) video.currentTime = skipTimes.outro.end;
+              setActiveSkip(null);
+            }}
+          >
+            <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16">
+              <path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/>
+            </svg>
+            Skip Outro
+          </button>
+        )}
 
         {/* Bottom Controls Bar */}
-        <div className={`custom-controls ${showControls ? "visible" : ""}`}>
+        <div
+          className={`custom-controls ${showControls ? "visible" : ""}`}
+          onMouseEnter={() => {
+            isHoveringControlsRef.current = true;
+          }}
+          onMouseLeave={() => {
+            isHoveringControlsRef.current = false;
+            resetTimer();
+          }}
+        >
           {/* Progress Bar */}
           <div className="progress-bar-container" onClick={handleSeek}>
             <div className="progress-bar-bg">
@@ -444,7 +771,7 @@ export default function VideoPlayer({ src, type = "iframe", directUrl, thumbnail
               />
 
               <span className="time-display">
-                {formatTime(currentTime)} / {formatTime(duration)}
+                {helperFormatTime(currentTime)} / {helperFormatTime(duration)}
               </span>
             </div>
 
@@ -528,8 +855,9 @@ export default function VideoPlayer({ src, type = "iframe", directUrl, thumbnail
           src={src}
           className="player-iframe"
           allowFullScreen
+          allow="autoplay; fullscreen; encrypted-media; picture-in-picture"
+          referrerPolicy="no-referrer-when-downgrade"
           scrolling="no"
-          sandbox="allow-scripts allow-same-origin allow-forms allow-presentation"
         />
       </div>
     </div>

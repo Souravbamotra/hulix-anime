@@ -1,12 +1,3 @@
-import { fetch, Agent } from "undici";
-
-const undiciAgent = new Agent({
-  keepAliveTimeout: 30000,
-  keepAliveMaxTimeout: 60000,
-  connections: 200,
-  pipelining: 5
-});
-
 export async function GET(request) {
   const { searchParams } = new URL(request.url);
   const url = searchParams.get("url");
@@ -26,11 +17,39 @@ export async function GET(request) {
       headers["Range"] = range;
     }
 
+    // Forward conditional request headers to upstream
+    const ifNoneMatch = request.headers.get("if-none-match") || request.headers.get("If-None-Match");
+    if (ifNoneMatch) {
+      headers["If-None-Match"] = ifNoneMatch;
+    }
+
+    const ifModifiedSince = request.headers.get("if-modified-since") || request.headers.get("If-Modified-Since");
+    if (ifModifiedSince) {
+      headers["If-Modified-Since"] = ifModifiedSince;
+    }
+
     const res = await fetch(url, { 
       headers,
-      signal: request.signal,
-      dispatcher: undiciAgent
+      signal: request.signal
     });
+
+    // Check for 304 Not Modified response first
+    if (res.status === 304) {
+      const responseHeaders = {
+        "Access-Control-Allow-Origin": "*",
+      };
+      
+      const etag = res.headers.get("etag") || res.headers.get("ETag");
+      if (etag) responseHeaders["ETag"] = etag;
+      
+      const lastModified = res.headers.get("last-modified") || res.headers.get("Last-Modified");
+      if (lastModified) responseHeaders["Last-Modified"] = lastModified;
+
+      return new Response(null, {
+        status: 304,
+        headers: responseHeaders
+      });
+    }
 
     if (!res.ok) {
       return new Response(`Failed to fetch: ${res.statusText}`, { status: res.status });
@@ -69,7 +88,7 @@ export async function GET(request) {
         headers: {
           "Content-Type": "application/x-mpegURL",
           "Access-Control-Allow-Origin": "*",
-          "Cache-Control": "no-cache"
+          "Cache-Control": "public, s-maxage=10"
         }
       });
     }
@@ -79,10 +98,17 @@ export async function GET(request) {
     const responseHeaders = {
       "Content-Type": contentType,
       "Access-Control-Allow-Origin": "*",
-      "Cache-Control": "public, max-age=86400",
+      "Cache-Control": "public, max-age=31536000, immutable", // 1 year cache for immutable TS segments
       "X-Accel-Buffering": "no",
+      "Accept-Ranges": "bytes",
       "Connection": "keep-alive"
     };
+
+    const etag = res.headers.get("etag") || res.headers.get("ETag");
+    if (etag) responseHeaders["ETag"] = etag;
+
+    const lastModified = res.headers.get("last-modified") || res.headers.get("Last-Modified");
+    if (lastModified) responseHeaders["Last-Modified"] = lastModified;
 
     const contentRange = res.headers.get("content-range") || res.headers.get("Content-Range");
     if (contentRange) {

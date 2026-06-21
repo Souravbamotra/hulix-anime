@@ -3,8 +3,9 @@ import Link from "next/link";
 import Image from "next/image";
 import Navbar from "@/components/Navbar";
 import { getAnimeDetails } from "@/lib/anilist";
-import { findGogoAnimeSlug, getAnimeEpisodes, findRareAnimesSlug, getRareAnimesEpisodes } from "@/lib/scraper";
+import { findGogoAnimeSlug, getAnimeEpisodes, findRareAnimesSlug, getRareAnimesEpisodes, getAnidapEpisodes } from "@/lib/scraper";
 import EpisodesList from "@/components/EpisodesList";
+import { fetchFillerList, getFillerSlug } from "@/lib/filler";
 
 export const revalidate = 1800; // Cache detail pages for 30 minutes
 
@@ -12,13 +13,18 @@ async function EpisodeListSection({ media }) {
   let subEpisodes = [];
   let engDubEpisodes = [];
   let hindiDubEpisodes = [];
+  let fillerList = {};
   try {
-    const [gogoSubSlug, gogoDubSlug, rareSlug] = await Promise.all([
+    const fillerSlug = getFillerSlug(media.title.romaji, media.title.english);
+    const [gogoSubSlug, gogoDubSlug, rareSlug, fillerData] = await Promise.all([
       findGogoAnimeSlug(media.title.romaji, media.title.english, media.format, false),
       findGogoAnimeSlug(media.title.romaji, media.title.english, media.format, true),
-      findRareAnimesSlug(media.title.romaji, media.title.english, media.format)
+      findRareAnimesSlug(media.title.romaji, media.title.english, media.format),
+      fillerSlug ? fetchFillerList(fillerSlug) : Promise.resolve({})
     ]);
-    
+
+    fillerList = fillerData || {};
+
     const [gogoSubRes, gogoDubRes, rareRes] = await Promise.all([
       gogoSubSlug ? getAnimeEpisodes(gogoSubSlug) : Promise.resolve([]),
       gogoDubSlug ? getAnimeEpisodes(gogoDubSlug) : Promise.resolve([]),
@@ -28,6 +34,42 @@ async function EpisodeListSection({ media }) {
     subEpisodes = gogoSubRes;
     engDubEpisodes = gogoDubRes;
     hindiDubEpisodes = rareRes;
+
+    // Validate GogoAnime episodes count
+    const cleanRomaji = (media.title.romaji || "").toLowerCase();
+    const cleanEnglish = (media.title.english || "").toLowerCase();
+    const isCombined = ["one piece", "black clover", "detective conan", "pokemon", "fairy tail", "doraemon"].some(
+      t => cleanRomaji.includes(t) || cleanEnglish.includes(t)
+    );
+    
+    if (media.episodes && !isCombined) {
+      if (subEpisodes.length > media.episodes) {
+        console.warn(`[Details Page] Rejecting GogoAnime sub episodes due to mismatch (expected ${media.episodes}, got ${subEpisodes.length})`);
+        subEpisodes = [];
+      }
+      if (engDubEpisodes.length > media.episodes) {
+        console.warn(`[Details Page] Rejecting GogoAnime dub episodes due to mismatch (expected ${media.episodes}, got ${engDubEpisodes.length})`);
+        engDubEpisodes = [];
+      }
+    }
+
+    // AniDap Fallback integration (AniDap uses AniList ID for 'id' parameter)
+    const subCount = subEpisodes.length;
+    if (media.id && (subCount === 0 || (media.episodes && subCount < media.episodes))) {
+      console.log(`[Details Page] GogoAnime sub episodes count (${subCount}) is less than expected (${media.episodes}). Fetching AniDap fallback for AniList ID: ${media.id}`);
+      const anidapSub = await getAnidapEpisodes(media.id, false, media.episodes);
+      if (anidapSub && anidapSub.length > subCount) {
+        subEpisodes = anidapSub;
+      }
+    }
+    const dubCount = engDubEpisodes.length;
+    if (media.id && (dubCount === 0 || (media.episodes && dubCount < media.episodes))) {
+      console.log(`[Details Page] GogoAnime dub episodes count (${dubCount}) is less than expected (${media.episodes}). Fetching AniDap fallback for AniList ID: ${media.id}`);
+      const anidapDub = await getAnidapEpisodes(media.id, true, media.episodes);
+      if (anidapDub && anidapDub.length > dubCount) {
+        engDubEpisodes = anidapDub;
+      }
+    }
   } catch (error) {
     console.error("Failed to fetch episodes on server:", error);
   }
@@ -38,6 +80,7 @@ async function EpisodeListSection({ media }) {
       engDubEpisodes={engDubEpisodes}
       hindiDubEpisodes={hindiDubEpisodes}
       animeId={media.id}
+      fillerList={fillerList}
       variant="grid"
     />
   );

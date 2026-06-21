@@ -4,22 +4,107 @@ import { useState, useEffect, useMemo } from "react";
 import { useRouter } from "next/navigation";
 import VideoPlayer from "./VideoPlayer";
 
-export default function WatchPlayer({ initialServers, episodeSlug, nextEpisodeSlug, animeId }) {
+export default function WatchPlayer({
+  initialServers,
+  episodeSlug,
+  nextEpisodeSlug,
+  animeId,
+  malId,
+  animeTitle,
+  animeCover,
+  episodeNumber,
+  episodeTitle,
+  language,
+  episodes = [],
+  fillerList = {}
+}) {
   const router = useRouter();
+  const [hideFillers, setHideFillers] = useState(false);
+
+  useEffect(() => {
+    const checkHideFillers = () => {
+      setHideFillers(localStorage.getItem("hulix_hide_fillers") === "true");
+    };
+    checkHideFillers();
+    window.addEventListener("hulix_hide_fillers_changed", checkHideFillers);
+    return () => window.removeEventListener("hulix_hide_fillers_changed", checkHideFillers);
+  }, []);
 
   const handleEpisodeEnded = () => {
-    if (nextEpisodeSlug && animeId) {
-      router.push(`/watch/${nextEpisodeSlug}?animeId=${animeId}`);
+    if (!animeId) return;
+
+    let targetSlug = nextEpisodeSlug;
+
+    if (hideFillers && episodes && episodes.length > 0 && fillerList && Object.keys(fillerList).length > 0) {
+      const currentIdx = episodes.findIndex(ep => ep.slug === episodeSlug);
+      if (currentIdx !== -1) {
+        let nextIdx = currentIdx + 1;
+        while (nextIdx < episodes.length) {
+          const nextEp = episodes[nextIdx];
+          const epNum = parseFloat(nextEp.number);
+          const status = fillerList[epNum];
+          if (status !== "filler") {
+            targetSlug = nextEp.slug;
+            break;
+          }
+          nextIdx++;
+        }
+        if (nextIdx >= episodes.length) {
+          targetSlug = null;
+        }
+      }
+    }
+
+    if (targetSlug) {
+      router.push(`/watch/${targetSlug}?animeId=${animeId}`);
     }
   };
   const [servers, setServers] = useState(initialServers || []);
-  const [activeCategory, setActiveCategory] = useState("sub");
+
+  // Helper to check if a server's embed can be extracted to a direct stream
+  const isServerExtractable = (server) => {
+    if (!server) return false;
+    const embedUrl = server.iframeUrl;
+    if (!embedUrl) return false;
+    return (
+      embedUrl.includes("megaplay.su") ||
+      embedUrl.includes("codedew.com") ||
+      embedUrl.includes("razorshell.space") ||
+      embedUrl.includes("streambeta") ||
+      embedUrl.includes("multiquality") ||
+      embedUrl.includes("anidap.se")
+    );
+  };
+
+  // Compute initial category, server, and extraction state
+  const initialCategory = useMemo(() => {
+    const list = initialServers || [];
+    if (list.length === 0) return "sub";
+    const categoriesList = list.map(s => s.category || "sub");
+    if (categoriesList.includes(language)) return language;
+    return categoriesList[0] || "sub";
+  }, [initialServers, language]);
+
+  const [activeCategory, setActiveCategory] = useState(initialCategory);
   const [activeServerIndex, setActiveServerIndex] = useState(0);
   const [isLoading, setIsLoading] = useState(false);
 
-  // Direct stream state (extracted from embed)
+  // Determine initial server and whether it is extracting
+  const initialIsExtracting = useMemo(() => {
+    const list = initialServers || [];
+    const grouped = {};
+    list.forEach((s) => {
+      const cat = s.category || "sub";
+      if (!grouped[cat]) grouped[cat] = [];
+      grouped[cat].push(s);
+    });
+    const currentSrvs = grouped[initialCategory] || [];
+    const defaultServer = currentSrvs[0] || null;
+    return defaultServer ? isServerExtractable(defaultServer) : false;
+  }, [initialServers, initialCategory]);
+
   const [directStream, setDirectStream] = useState(null);
-  const [isExtracting, setIsExtracting] = useState(false);
+  const [isExtracting, setIsExtracting] = useState(initialIsExtracting);
   const [playerMode, setPlayerMode] = useState("auto"); // "auto" = try direct first, "iframe" = force iframe
 
   // Group servers by category (sub / dub)
@@ -48,11 +133,30 @@ export default function WatchPlayer({ initialServers, episodeSlug, nextEpisodeSl
     setActiveCategory(cat);
     setActiveServerIndex(0);
     setDirectStream(null); // Reset direct stream when switching
+    
+    // Check if the new default server for this category is extractable
+    const newServers = categories[cat] || [];
+    const newServer = newServers[0] || null;
+    setIsExtracting(playerMode === "auto" && isServerExtractable(newServer));
   };
 
   const handleServerChange = (idx) => {
     setActiveServerIndex(idx);
     setDirectStream(null); // Reset direct stream when switching server
+    
+    // Check if the selected server is extractable
+    const newServer = currentServers[idx] || null;
+    setIsExtracting(playerMode === "auto" && isServerExtractable(newServer));
+  };
+
+  const handlePlayerModeChange = (mode) => {
+    setPlayerMode(mode);
+    setDirectStream(null);
+    if (mode === "auto") {
+      setIsExtracting(isServerExtractable(currentServer));
+    } else {
+      setIsExtracting(false);
+    }
   };
 
   // Fetch servers dynamically if not provided at build time
@@ -81,13 +185,14 @@ export default function WatchPlayer({ initialServers, episodeSlug, nextEpisodeSl
     const embedUrl = currentServer.iframeUrl;
     if (!embedUrl) return;
 
-    // Only try extraction for supported media extraction hosts (Gogo megaplay + RareAnimes hosts)
+    // Only try extraction for supported media extraction hosts
     if (
       embedUrl.includes("megaplay.su") ||
       embedUrl.includes("codedew.com") ||
       embedUrl.includes("razorshell.space") ||
       embedUrl.includes("streambeta") ||
-      embedUrl.includes("multiquality")
+      embedUrl.includes("multiquality") ||
+      embedUrl.includes("anidap.se")
     ) {
       setIsExtracting(true);
       fetch(`/api/extract-stream?embedUrl=${encodeURIComponent(embedUrl)}`)
@@ -141,13 +246,33 @@ export default function WatchPlayer({ initialServers, episodeSlug, nextEpisodeSl
       ) : directStream && playerMode !== "iframe" ? (
         <VideoPlayer
           directUrl={directStream.directUrl}
-          thumbnailUrl={directStream.thumbnailUrl}
-          type={directStream.type}
           qualities={directStream.qualities}
+          type={directStream.type}
+          thumbnailUrl={directStream.thumbnailUrl}
           onEnded={handleEpisodeEnded}
+          animeId={animeId}
+          malId={malId}
+          animeTitle={animeTitle}
+          animeCover={animeCover}
+          episodeId={episodeSlug}
+          episodeNumber={episodeNumber}
+          episodeTitle={episodeTitle}
+          language={language || activeCategory}
         />
       ) : (
-        <VideoPlayer src={currentServer.iframeUrl} type={currentServer.sourceType} onEnded={handleEpisodeEnded} />
+        <VideoPlayer
+          src={currentServer.iframeUrl}
+          type={currentServer.sourceType}
+          onEnded={handleEpisodeEnded}
+          animeId={animeId}
+          malId={malId}
+          animeTitle={animeTitle}
+          animeCover={animeCover}
+          episodeId={episodeSlug}
+          episodeNumber={episodeNumber}
+          episodeTitle={episodeTitle}
+          language={language || activeCategory}
+        />
       )}
 
       {/* Server Selector Panel */}
@@ -188,7 +313,7 @@ export default function WatchPlayer({ initialServers, episodeSlug, nextEpisodeSl
         <div className="player-mode-toggle">
           <button
             className={`mode-btn ${playerMode !== "iframe" ? "active" : ""}`}
-            onClick={() => setPlayerMode("auto")}
+            onClick={() => handlePlayerModeChange("auto")}
             title="Custom Player — Ad-free with native controls"
           >
             <svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14">
@@ -198,7 +323,7 @@ export default function WatchPlayer({ initialServers, episodeSlug, nextEpisodeSl
           </button>
           <button
             className={`mode-btn ${playerMode === "iframe" ? "active" : ""}`}
-            onClick={() => setPlayerMode("iframe")}
+            onClick={() => handlePlayerModeChange("iframe")}
             title="Embedded Player — Original third-party player"
           >
             <svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14">
