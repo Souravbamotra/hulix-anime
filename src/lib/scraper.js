@@ -1997,7 +1997,7 @@ export async function findToonStreamSlug(aniListTitleRomaji, aniListTitleEnglish
       aniListTitleEnglish = fallbackEnglish;
     }
   }
-  const cacheKey = getCacheKey("toon_slug", `${aniListTitleRomaji}_${aniListTitleEnglish}`);
+  const cacheKey = getCacheKey("toon_slug2", `${aniListTitleRomaji}_${aniListTitleEnglish}`);
   const cached = await getCache(cacheKey, LONG_CACHE_TTL);
   if (cached) return cached;
   
@@ -2058,7 +2058,7 @@ async function findToonStreamSlugUncached(aniListTitleRomaji, aniListTitleEnglis
 }
 
 export async function getToonStreamEpisodes(slug) {
-  const cacheKey = getCacheKey("toon_eps", slug);
+  const cacheKey = getCacheKey("toon_eps2", slug);
   const cached = await getCache(cacheKey);
   if (cached) return cached;
   
