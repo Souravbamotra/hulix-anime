@@ -102,16 +102,13 @@ const getEpisodesCached = cache(async (romaji, english, format, anilistId, total
     
     if (totalEpisodes && !isCombined) {
       if (gogoSubEpisodes.length > totalEpisodes) {
-        console.warn(`[Watch Page] Rejecting GogoAnime sub episodes due to mismatch (expected ${totalEpisodes}, got ${gogoSubEpisodes.length})`);
-        gogoSubEpisodes = [];
+        console.warn(`[Watch Page] GogoAnime sub episodes count mismatch (expected ${totalEpisodes}, got ${gogoSubEpisodes.length})`);
       }
       if (gogoDubEpisodes.length > totalEpisodes) {
-        console.warn(`[Watch Page] Rejecting GogoAnime dub episodes due to mismatch (expected ${totalEpisodes}, got ${gogoDubEpisodes.length})`);
-        gogoDubEpisodes = [];
+        console.warn(`[Watch Page] GogoAnime dub episodes count mismatch (expected ${totalEpisodes}, got ${gogoDubEpisodes.length})`);
       }
       if (rareEpisodes.length > totalEpisodes) {
-        console.warn(`[Watch Page] Rejecting RareAnimes/ToonStream episodes due to mismatch (expected ${totalEpisodes}, got ${rareEpisodes.length})`);
-        rareEpisodes = [];
+        console.warn(`[Watch Page] RareAnimes/ToonStream episodes count mismatch (expected ${totalEpisodes}, got ${rareEpisodes.length})`);
       }
     }
 

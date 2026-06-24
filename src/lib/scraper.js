@@ -1997,7 +1997,7 @@ export async function findToonStreamSlug(aniListTitleRomaji, aniListTitleEnglish
       aniListTitleEnglish = fallbackEnglish;
     }
   }
-  const cacheKey = getCacheKey("toon_slug2", `${aniListTitleRomaji}_${aniListTitleEnglish}`);
+  const cacheKey = getCacheKey("toon_slug3", `${aniListTitleRomaji}_${aniListTitleEnglish}`);
   const cached = await getCache(cacheKey, LONG_CACHE_TTL);
   if (cached) return cached;
   
@@ -2058,7 +2058,7 @@ async function findToonStreamSlugUncached(aniListTitleRomaji, aniListTitleEnglis
 }
 
 export async function getToonStreamEpisodes(slug) {
-  const cacheKey = getCacheKey("toon_eps2", slug);
+  const cacheKey = getCacheKey("toon_eps3", slug);
   const cached = await getCache(cacheKey);
   if (cached) return cached;
   
@@ -2102,7 +2102,7 @@ async function getToonStreamEpisodesUncached(slug) {
     }
 
     // Helper: extract episode entries from a cheerio DOM
-    function extractEpisodes($ctx) {
+    function extractEpisodes($ctx, defaultSeason = 1) {
       const found = [];
       $ctx("a").each((i, el) => {
         const href = $ctx(el).attr('href') || '';
@@ -2110,45 +2110,74 @@ async function getToonStreamEpisodesUncached(slug) {
           const path = href.replace('https://toonstream.vip/', '').replace(/\/$/, '');
           // Matches SxE pattern at end of path, e.g. dragon-ball-z-kai-1x26
           const numMatch = path.match(/[-_](\d+)x(\d+(\.\d+)?)$/i);
+          let season = defaultSeason;
+          let ep = parseFloat(path.split("-").pop()); // fallback
           if (numMatch) {
-            const season = parseInt(numMatch[1], 10);
-            const ep = parseFloat(numMatch[2]);
-            // Flatten multi-season: treat as absolute episode number per season
-            // We'll keep a composite key so we can deduplicate properly
-            found.push({
-              number: ep,
-              season,
-              title: `Episode ${ep}`,
-              slug: `toonstream-${path}`
-            });
+            season = parseInt(numMatch[1], 10);
+            ep = parseFloat(numMatch[2]);
           }
+          found.push({
+            number: ep,
+            season,
+            title: `Episode ${ep}`,
+            slug: `toonstream-${path}`
+          });
         }
       });
       return found;
     }
 
-    // 1. Scrape series page (gets Season 1 only in static HTML)
+    // 1. Scrape series page (gets Season 1 episodes)
     const seriesEps = extractEpisodes($);
     episodes.push(...seriesEps);
 
-    // 2. If we found at least one episode, also fetch that episode's sidebar
-    //    which contains ALL seasons' episode links
-    if (seriesEps.length > 0) {
-      const firstEpSlug = seriesEps[0].slug.replace('toonstream-', '');
-      const epUrl = `https://toonstream.vip/${firstEpSlug}/`;
-      try {
-        const epRes = await fetch(epUrl, {
-          headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36" }
-        });
-        if (epRes.ok) {
-          const epHtml = await epRes.text();
-          const ep$ = cheerio.load(epHtml);
-          const sidebarEps = extractEpisodes(ep$);
-          console.log(`[ToonStream] Episode page sidebar yielded ${sidebarEps.length} total episodes`);
-          episodes.push(...sidebarEps);
+    // 2. Fetch other seasons if present via AJAX
+    const seasonElements = $(".choose-season li.sel-temp a");
+    if (seasonElements.length > 0) {
+      const ajaxPromises = [];
+      seasonElements.each((i, el) => {
+        const seasonVal = $(el).attr("data-season");
+        const postVal = $(el).attr("data-post");
+        const seasonNum = parseInt(seasonVal, 10);
+        
+        // Skip Season 1 since we already have it from the main series page
+        if (seasonNum > 1 && postVal) {
+          ajaxPromises.push((async () => {
+            try {
+              const ajaxUrl = "https://toonstream.vip/wp-admin/admin-ajax.php";
+              const formData = new URLSearchParams();
+              formData.append("action", "action_select_season");
+              formData.append("season", seasonVal);
+              formData.append("post", postVal);
+
+              const ajaxRes = await fetch(ajaxUrl, {
+                method: "POST",
+                headers: {
+                  "Content-Type": "application/x-www-form-urlencoded",
+                  "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36",
+                  "Referer": url
+                },
+                body: formData.toString()
+              });
+
+              if (ajaxRes.ok) {
+                const ajaxHtml = await ajaxRes.text();
+                const ajax$ = cheerio.load(ajaxHtml);
+                return extractEpisodes(ajax$, seasonNum);
+              }
+            } catch (e) {
+              console.warn(`[ToonStream] Failed to fetch Season ${seasonNum} via AJAX:`, e.message);
+            }
+            return [];
+          })());
         }
-      } catch (e) {
-        console.warn(`[ToonStream] Could not fetch episode sidebar:`, e.message);
+      });
+
+      if (ajaxPromises.length > 0) {
+        const ajaxResults = await Promise.all(ajaxPromises);
+        for (const resList of ajaxResults) {
+          episodes.push(...resList);
+        }
       }
     }
 
@@ -2162,14 +2191,14 @@ async function getToonStreamEpisodesUncached(slug) {
       }
     }
 
-    // For multi-season shows, compute a global sequential episode number.
-    // Group by season, sort each season, then number sequentially.
+    // Sort and global index
     const bySeason = {};
     for (const ep of uniqueEpisodes) {
       const s = ep.season || 1;
       if (!bySeason[s]) bySeason[s] = [];
       bySeason[s].push(ep);
     }
+    
     const seasons = Object.keys(bySeason).map(Number).sort((a, b) => a - b);
     let globalNum = 0;
     const flattened = [];

@@ -99,16 +99,13 @@ async function EpisodeListSection({ media }) {
     
     if (media.episodes && !isCombined) {
       if (subEpisodes.length > media.episodes) {
-        console.warn(`[Details Page] Rejecting GogoAnime sub episodes due to mismatch (expected ${media.episodes}, got ${subEpisodes.length})`);
-        subEpisodes = [];
+        console.warn(`[Details Page] GogoAnime sub episodes count mismatch (expected ${media.episodes}, got ${subEpisodes.length})`);
       }
       if (engDubEpisodes.length > media.episodes) {
-        console.warn(`[Details Page] Rejecting GogoAnime dub episodes due to mismatch (expected ${media.episodes}, got ${engDubEpisodes.length})`);
-        engDubEpisodes = [];
+        console.warn(`[Details Page] GogoAnime dub episodes count mismatch (expected ${media.episodes}, got ${engDubEpisodes.length})`);
       }
       if (hindiDubEpisodes.length > media.episodes) {
-        console.warn(`[Details Page] Rejecting RareAnimes/ToonStream episodes due to mismatch (expected ${media.episodes}, got ${hindiDubEpisodes.length})`);
-        hindiDubEpisodes = [];
+        console.warn(`[Details Page] RareAnimes/ToonStream episodes count mismatch (expected ${media.episodes}, got ${hindiDubEpisodes.length})`);
       }
     }
 
