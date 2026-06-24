@@ -73,24 +73,26 @@ export async function generateMetadata({ params, searchParams }) {
 
 const getEpisodesCached = cache(async (romaji, english, format, anilistId, totalEpisodes, seasonYear) => {
   try {
-    const [gogoSubSlug, gogoDubSlug, rareSlug] = await Promise.all([
+    const [gogoSubSlug, gogoDubSlug, rareSlug, toonSlug] = await Promise.all([
       findGogoAnimeSlug(romaji, english, format, false, seasonYear),
       findGogoAnimeSlug(romaji, english, format, true, seasonYear),
-      findRareAnimesSlug(romaji, english, format, seasonYear)
+      findRareAnimesSlug(romaji, english, format, seasonYear),
+      findToonStreamSlug(romaji, english, format, seasonYear)
     ]);
     
-    let [gogoSubEpisodes, gogoDubEpisodes, rareEpisodes] = await Promise.all([
+    let [gogoSubEpisodes, gogoDubEpisodes, rareEpisodes, toonEpisodes] = await Promise.all([
       gogoSubSlug ? getAnimeEpisodes(gogoSubSlug) : Promise.resolve([]),
       gogoDubSlug ? getAnimeEpisodes(gogoDubSlug) : Promise.resolve([]),
-      rareSlug ? getRareAnimesEpisodes(rareSlug) : Promise.resolve([])
+      rareSlug ? getRareAnimesEpisodes(rareSlug) : Promise.resolve([]),
+      toonSlug ? getToonStreamEpisodes(toonSlug) : Promise.resolve([])
     ]);
     
-    if (rareEpisodes.length === 0) {
-      console.log(`[Watch Page] No Hindi Dub episodes found on RareAnimes. Trying ToonStream backup...`);
-      const toonSlug = await findToonStreamSlug(romaji, english, format, seasonYear);
-      if (toonSlug) {
-        rareEpisodes = await getToonStreamEpisodes(toonSlug);
-      }
+    // Choose the provider that has more Hindi Dub episodes
+    if (toonEpisodes.length > rareEpisodes.length) {
+      console.log(`[Watch Page] ToonStream has more Hindi Dub episodes (${toonEpisodes.length}) than RareAnimes (${rareEpisodes.length}). Using ToonStream.`);
+      rareEpisodes = toonEpisodes;
+    } else {
+      console.log(`[Watch Page] Using RareAnimes Hindi Dub episodes (${rareEpisodes.length})`);
     }
     
     // Validate GogoAnime episodes count

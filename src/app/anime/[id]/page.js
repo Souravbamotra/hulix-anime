@@ -61,33 +61,33 @@ async function EpisodeListSection({ media }) {
   let fillerList = {};
   try {
     const fillerSlug = getFillerSlug(media.title.romaji, media.title.english);
-    const [gogoSubSlug, gogoDubSlug, rareSlug, fillerData] = await Promise.all([
+    const [gogoSubSlug, gogoDubSlug, rareSlug, toonSlug, fillerData] = await Promise.all([
       findGogoAnimeSlug(media.title.romaji, media.title.english, media.format, false, media.seasonYear),
       findGogoAnimeSlug(media.title.romaji, media.title.english, media.format, true, media.seasonYear),
       findRareAnimesSlug(media.title.romaji, media.title.english, media.format, media.seasonYear),
+      findToonStreamSlug(media.title.romaji, media.title.english, media.format, media.seasonYear),
       fillerSlug ? fetchFillerList(fillerSlug) : Promise.resolve({})
     ]);
 
     fillerList = fillerData || {};
 
-    const [gogoSubRes, gogoDubRes, rareRes] = await Promise.all([
+    const [gogoSubRes, gogoDubRes, rareRes, toonRes] = await Promise.all([
       gogoSubSlug ? getAnimeEpisodes(gogoSubSlug) : Promise.resolve([]),
       gogoDubSlug ? getAnimeEpisodes(gogoDubSlug) : Promise.resolve([]),
-      rareSlug ? getRareAnimesEpisodes(rareSlug) : Promise.resolve([])
+      rareSlug ? getRareAnimesEpisodes(rareSlug) : Promise.resolve([]),
+      toonSlug ? getToonStreamEpisodes(toonSlug) : Promise.resolve([])
     ]);
     
     subEpisodes = gogoSubRes;
     engDubEpisodes = gogoDubRes;
-    hindiDubEpisodes = rareRes;
-
-    // ToonStream fallback: if RareAnimes returned nothing, try ToonStream
-    if (hindiDubEpisodes.length === 0) {
-      console.log(`[Details Page] No Hindi Dub episodes found on RareAnimes. Trying ToonStream backup...`);
-      const toonSlug = await findToonStreamSlug(media.title.romaji, media.title.english, media.format, media.seasonYear);
-      if (toonSlug) {
-        hindiDubEpisodes = await getToonStreamEpisodes(toonSlug);
-        console.log(`[Details Page] ToonStream returned ${hindiDubEpisodes.length} episodes for slug: ${toonSlug}`);
-      }
+    
+    // Choose the provider that has more Hindi Dub episodes
+    if (toonRes.length > rareRes.length) {
+      console.log(`[Details Page] ToonStream has more Hindi Dub episodes (${toonRes.length}) than RareAnimes (${rareRes.length}). Using ToonStream.`);
+      hindiDubEpisodes = toonRes;
+    } else {
+      console.log(`[Details Page] Using RareAnimes Hindi Dub episodes (${rareRes.length})`);
+      hindiDubEpisodes = rareRes;
     }
 
     // Validate GogoAnime episodes count
