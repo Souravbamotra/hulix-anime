@@ -3,7 +3,7 @@ import Link from "next/link";
 import Image from "next/image";
 import Navbar from "@/components/Navbar";
 import { getAnimeDetails } from "@/lib/anilist";
-import { findGogoAnimeSlug, getAnimeEpisodes, findRareAnimesSlug, getRareAnimesEpisodes, getAnidapEpisodes } from "@/lib/scraper";
+import { findGogoAnimeSlug, getAnimeEpisodes, findRareAnimesSlug, getRareAnimesEpisodes, getAnidapEpisodes, findToonStreamSlug, getToonStreamEpisodes } from "@/lib/scraper";
 import EpisodesList from "@/components/EpisodesList";
 import AnimeDescription from "@/components/AnimeDescription";
 import WatchlistButton from "@/components/WatchlistButton";
@@ -79,6 +79,16 @@ async function EpisodeListSection({ media }) {
     subEpisodes = gogoSubRes;
     engDubEpisodes = gogoDubRes;
     hindiDubEpisodes = rareRes;
+
+    // ToonStream fallback: if RareAnimes returned nothing, try ToonStream
+    if (hindiDubEpisodes.length === 0) {
+      console.log(`[Details Page] No Hindi Dub episodes found on RareAnimes. Trying ToonStream backup...`);
+      const toonSlug = await findToonStreamSlug(media.title.romaji, media.title.english, media.format, media.seasonYear);
+      if (toonSlug) {
+        hindiDubEpisodes = await getToonStreamEpisodes(toonSlug);
+        console.log(`[Details Page] ToonStream returned ${hindiDubEpisodes.length} episodes for slug: ${toonSlug}`);
+      }
+    }
 
     // Validate GogoAnime episodes count
     const cleanRomaji = (media.title.romaji || "").toLowerCase();
