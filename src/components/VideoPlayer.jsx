@@ -36,19 +36,21 @@ export default function VideoPlayer({
 
   // Hard-stop video/audio on unmount
   useEffect(() => {
+    const video = videoRef.current;
+    const iframe = iframeRef.current;
     return () => {
       try {
-        if (videoRef.current) {
-          videoRef.current.pause();
-          videoRef.current.src = "";
-          videoRef.current.load();
+        if (video) {
+          video.pause();
+          video.src = "";
+          video.load();
         }
       } catch (e) {
         console.warn("Failed to clean up video element:", e);
       }
       try {
-        if (iframeRef.current) {
-          iframeRef.current.src = "about:blank";
+        if (iframe) {
+          iframe.src = "about:blank";
         }
       } catch (e) {
         console.warn("Failed to clean up iframe element:", e);
@@ -100,18 +102,20 @@ export default function VideoPlayer({
 
   useEffect(() => {
     if (isStopped) {
+      const video = videoRef.current;
+      const iframe = iframeRef.current;
       try {
-        if (videoRef.current) {
-          videoRef.current.pause();
-          videoRef.current.src = "";
-          videoRef.current.load();
+        if (video) {
+          video.pause();
+          video.src = "";
+          video.load();
         }
       } catch (e) {
         console.warn("Failed to pause video on stop:", e);
       }
       try {
-        if (iframeRef.current) {
-          iframeRef.current.src = "about:blank";
+        if (iframe) {
+          iframe.src = "about:blank";
         }
       } catch (e) {
         console.warn("Failed to clean up iframe on stop:", e);
