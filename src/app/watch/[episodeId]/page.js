@@ -87,8 +87,19 @@ const getEpisodesCached = cache(async (romaji, english, format, anilistId, total
       toonSlug ? getToonStreamEpisodes(toonSlug) : Promise.resolve([])
     ]);
     
-    // Choose the provider that has more Hindi Dub episodes
-    if (toonEpisodes.length > rareEpisodes.length) {
+    // Choose the provider that has more Hindi Dub episodes, but override for One Piece
+    const cleanRomaji = (romaji || "").toLowerCase();
+    const cleanEnglish = (english || "").toLowerCase();
+    const isOnePiece = cleanRomaji.includes("one piece") || cleanEnglish.includes("one piece");
+
+    if (isOnePiece) {
+      console.log(`[Watch Page] Overriding provider for One Piece: using RareAnimes.`);
+      if (rareEpisodes.length > 0) {
+        // Keep RareAnimes episodes
+      } else {
+        rareEpisodes = toonEpisodes;
+      }
+    } else if (toonEpisodes.length > rareEpisodes.length) {
       console.log(`[Watch Page] ToonStream has more Hindi Dub episodes (${toonEpisodes.length}) than RareAnimes (${rareEpisodes.length}). Using ToonStream.`);
       rareEpisodes = toonEpisodes;
     } else {
@@ -96,8 +107,6 @@ const getEpisodesCached = cache(async (romaji, english, format, anilistId, total
     }
     
     // Validate GogoAnime episodes count
-    const cleanRomaji = (romaji || "").toLowerCase();
-    const cleanEnglish = (english || "").toLowerCase();
     const isCombined = ["one piece", "black clover", "detective conan", "pokemon", "fairy tail", "doraemon"].some(
       t => cleanRomaji.includes(t) || cleanEnglish.includes(t)
     );

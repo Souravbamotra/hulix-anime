@@ -81,8 +81,19 @@ async function EpisodeListSection({ media }) {
     subEpisodes = gogoSubRes;
     engDubEpisodes = gogoDubRes;
     
-    // Choose the provider that has more Hindi Dub episodes
-    if (toonRes.length > rareRes.length) {
+    // Choose the provider that has more Hindi Dub episodes, but override for One Piece
+    const cleanRomaji = (media.title.romaji || "").toLowerCase();
+    const cleanEnglish = (media.title.english || "").toLowerCase();
+    const isOnePiece = cleanRomaji.includes("one piece") || cleanEnglish.includes("one piece");
+
+    if (isOnePiece) {
+      console.log(`[Details Page] Overriding provider for One Piece: using RareAnimes.`);
+      if (rareRes.length > 0) {
+        hindiDubEpisodes = rareRes;
+      } else {
+        hindiDubEpisodes = toonRes;
+      }
+    } else if (toonRes.length > rareRes.length) {
       console.log(`[Details Page] ToonStream has more Hindi Dub episodes (${toonRes.length}) than RareAnimes (${rareRes.length}). Using ToonStream.`);
       hindiDubEpisodes = toonRes;
     } else {
@@ -91,8 +102,6 @@ async function EpisodeListSection({ media }) {
     }
 
     // Validate GogoAnime episodes count
-    const cleanRomaji = (media.title.romaji || "").toLowerCase();
-    const cleanEnglish = (media.title.english || "").toLowerCase();
     const isCombined = ["one piece", "black clover", "detective conan", "pokemon", "fairy tail", "doraemon"].some(
       t => cleanRomaji.includes(t) || cleanEnglish.includes(t)
     );
