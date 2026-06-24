@@ -1006,25 +1006,31 @@ export default function VideoPlayer({
   }
 
   // --- RENDER: Iframe fallback ---
-  if (isStopped) {
-    return (
-      <div className="video-player-container glass-panel">
-        <div className="iframe-wrapper" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '300px' }}>
+  return (
+    <div className="video-player-container glass-panel" style={{ position: 'relative' }}>
+      {isStopped && (
+        <div style={{
+          position: 'absolute',
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          background: 'rgba(0,0,0,0.85)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 10
+        }}>
           <div style={{ textAlign: 'center' }}>
             <div className="loading-spinner" style={{ margin: '0 auto 12px' }} />
             <p style={{ color: 'rgba(255,255,255,0.7)', fontSize: '0.9rem' }}>Stopping playback...</p>
           </div>
         </div>
-      </div>
-    );
-  }
-
-  return (
-    <div className="video-player-container glass-panel">
+      )}
       <div className="iframe-wrapper">
         <iframe
           ref={iframeRef}
-          src={src}
+          src={isStopped ? "about:blank" : src}
           className="player-iframe"
           allowFullScreen
           allow="autoplay; fullscreen; encrypted-media; picture-in-picture"
