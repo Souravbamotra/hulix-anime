@@ -952,6 +952,19 @@ export default function VideoPlayer({
   }
 
   // --- RENDER: Iframe fallback ---
+  if (isStopped) {
+    return (
+      <div className="video-player-container glass-panel">
+        <div className="iframe-wrapper" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '300px' }}>
+          <div style={{ textAlign: 'center' }}>
+            <div className="loading-spinner" style={{ margin: '0 auto 12px' }} />
+            <p style={{ color: 'rgba(255,255,255,0.7)', fontSize: '0.9rem' }}>Stopping playback...</p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="video-player-container glass-panel">
       <div className="iframe-wrapper">
