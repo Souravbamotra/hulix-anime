@@ -31,6 +31,29 @@ export default function VideoPlayer({
   const containerRef = useRef(null);
   const hlsRef = useRef(null);
   const progressTimerRef = useRef(null);
+  const iframeRef = useRef(null);
+
+  // Hard-stop video/audio on unmount
+  useEffect(() => {
+    return () => {
+      try {
+        if (videoRef.current) {
+          videoRef.current.pause();
+          videoRef.current.src = "";
+          videoRef.current.load();
+        }
+      } catch (e) {
+        console.warn("Failed to clean up video element:", e);
+      }
+      try {
+        if (iframeRef.current) {
+          iframeRef.current.src = "about:blank";
+        }
+      } catch (e) {
+        console.warn("Failed to clean up iframe element:", e);
+      }
+    };
+  }, []);
 
   // Player states
   const [isPlaying, setIsPlaying] = useState(false);
@@ -969,6 +992,7 @@ export default function VideoPlayer({
     <div className="video-player-container glass-panel">
       <div className="iframe-wrapper">
         <iframe
+          ref={iframeRef}
           src={src}
           className="player-iframe"
           allowFullScreen
