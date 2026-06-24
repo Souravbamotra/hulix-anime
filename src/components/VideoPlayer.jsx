@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState, useCallback } from "react";
+import { usePathname } from "next/navigation";
 import Hls from "hls.js";
 import {
   saveWatchEntry,
@@ -87,6 +88,36 @@ export default function VideoPlayer({
     hasPrefetchedRef.current = false;
     setIsStopped(false);
   }
+
+  const pathname = usePathname();
+  const [initialPathname] = useState(pathname);
+
+  useEffect(() => {
+    if (pathname !== initialPathname) {
+      setIsStopped(true);
+    }
+  }, [pathname, initialPathname]);
+
+  useEffect(() => {
+    if (isStopped) {
+      try {
+        if (videoRef.current) {
+          videoRef.current.pause();
+          videoRef.current.src = "";
+          videoRef.current.load();
+        }
+      } catch (e) {
+        console.warn("Failed to pause video on stop:", e);
+      }
+      try {
+        if (iframeRef.current) {
+          iframeRef.current.src = "about:blank";
+        }
+      } catch (e) {
+        console.warn("Failed to clean up iframe on stop:", e);
+      }
+    }
+  }, [isStopped]);
 
   // Sync autoNext state with localStorage on mount
   useEffect(() => {
