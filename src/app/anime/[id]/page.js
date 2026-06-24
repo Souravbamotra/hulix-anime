@@ -6,6 +6,7 @@ import { getAnimeDetails } from "@/lib/anilist";
 import { findGogoAnimeSlug, getAnimeEpisodes, findRareAnimesSlug, getRareAnimesEpisodes, getAnidapEpisodes } from "@/lib/scraper";
 import EpisodesList from "@/components/EpisodesList";
 import AnimeDescription from "@/components/AnimeDescription";
+import WatchlistButton from "@/components/WatchlistButton";
 import { fetchFillerList, getFillerSlug } from "@/lib/filler";
 
 export const unstable_instant = {
@@ -281,6 +282,17 @@ async function AnimeDetailsContent({ params }) {
                   <span key={genre} className="genre-tag">{genre}</span>
                 ))}
               </div>
+
+              {/* Watchlist / My List bookmark button */}
+              <WatchlistButton
+                animeId={media.id}
+                title={displayTitle}
+                coverImage={media.coverImage.large}
+                format={media.format || "TV"}
+                seasonYear={media.seasonYear}
+                score={media.averageScore}
+                variant="pill"
+              />
 
               <AnimeDescription description={cleanDescription} />
             </div>
