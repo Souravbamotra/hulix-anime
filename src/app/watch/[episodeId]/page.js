@@ -4,9 +4,21 @@ import Image from "next/image";
 import Navbar from "@/components/Navbar";
 import WatchPlayer from "@/components/WatchPlayer";
 import EpisodesList from "@/components/EpisodesList";
+import ErrorBoundary from "@/components/ErrorBoundary";
 import { getAnimeDetails } from "@/lib/anilist";
-import { findGogoAnimeSlug, getAnimeEpisodes, getEpisodeServers, findRareAnimesSlug, getRareAnimesEpisodes, getAnidapEpisodes } from "@/lib/scraper";
+import { findGogoAnimeSlug, getAnimeEpisodes, getEpisodeServers, findRareAnimesSlug, getRareAnimesEpisodes, getAnidapEpisodes, findToonStreamSlug, getToonStreamEpisodes } from "@/lib/scraper";
 import { fetchFillerList, getFillerSlug } from "@/lib/filler";
+
+export const unstable_instant = {
+  prefetch: 'runtime',
+  samples: [
+    {
+      params: { episodeId: 'one-piece-episode-1' },
+      searchParams: { animeId: '21' }
+    }
+  ],
+  unstable_disableValidation: true
+};
 
 export async function generateMetadata({ params, searchParams }) {
   const { episodeId } = await params;
@@ -59,14 +71,12 @@ export async function generateMetadata({ params, searchParams }) {
   }
 }
 
-export const revalidate = 300; // Cache for 5 minutes (ISR)
-
-const getEpisodesCached = cache(async (romaji, english, format, anilistId, totalEpisodes) => {
+const getEpisodesCached = cache(async (romaji, english, format, anilistId, totalEpisodes, seasonYear) => {
   try {
     const [gogoSubSlug, gogoDubSlug, rareSlug] = await Promise.all([
-      findGogoAnimeSlug(romaji, english, format, false),
-      findGogoAnimeSlug(romaji, english, format, true),
-      findRareAnimesSlug(romaji, english, format)
+      findGogoAnimeSlug(romaji, english, format, false, seasonYear),
+      findGogoAnimeSlug(romaji, english, format, true, seasonYear),
+      findRareAnimesSlug(romaji, english, format, seasonYear)
     ]);
     
     let [gogoSubEpisodes, gogoDubEpisodes, rareEpisodes] = await Promise.all([
@@ -74,6 +84,14 @@ const getEpisodesCached = cache(async (romaji, english, format, anilistId, total
       gogoDubSlug ? getAnimeEpisodes(gogoDubSlug) : Promise.resolve([]),
       rareSlug ? getRareAnimesEpisodes(rareSlug) : Promise.resolve([])
     ]);
+    
+    if (rareEpisodes.length === 0) {
+      console.log(`[Watch Page] No Hindi Dub episodes found on RareAnimes. Trying ToonStream backup...`);
+      const toonSlug = await findToonStreamSlug(romaji, english, format, seasonYear);
+      if (toonSlug) {
+        rareEpisodes = await getToonStreamEpisodes(toonSlug);
+      }
+    }
     
     // Validate GogoAnime episodes count
     const cleanRomaji = (romaji || "").toLowerCase();
@@ -90,6 +108,10 @@ const getEpisodesCached = cache(async (romaji, english, format, anilistId, total
       if (gogoDubEpisodes.length > totalEpisodes) {
         console.warn(`[Watch Page] Rejecting GogoAnime dub episodes due to mismatch (expected ${totalEpisodes}, got ${gogoDubEpisodes.length})`);
         gogoDubEpisodes = [];
+      }
+      if (rareEpisodes.length > totalEpisodes) {
+        console.warn(`[Watch Page] Rejecting RareAnimes/ToonStream episodes due to mismatch (expected ${totalEpisodes}, got ${rareEpisodes.length})`);
+        rareEpisodes = [];
       }
     }
 
@@ -124,8 +146,8 @@ const getEpisodesCached = cache(async (romaji, english, format, anilistId, total
 });
 
 async function WatchControls({ media, episodeId }) {
-  const { sub, engDub, hindiDub } = await getEpisodesCached(media.title.romaji, media.title.english, media.format, media.id, media.episodes);
-  const isHindiDub = episodeId.startsWith("rareanimes-");
+  const { sub, engDub, hindiDub } = await getEpisodesCached(media.title.romaji, media.title.english, media.format, media.id, media.episodes, media.seasonYear);
+  const isHindiDub = episodeId.startsWith("rareanimes-") || episodeId.startsWith("toonstream-");
   // Determine which episode list the current episode belongs to
   let episodes = sub;
   if (isHindiDub) {
@@ -172,7 +194,7 @@ async function WatchControls({ media, episodeId }) {
 }
 
 async function EpisodesSidebar({ media, episodeId, fillerList }) {
-  const { sub, engDub, hindiDub } = await getEpisodesCached(media.title.romaji, media.title.english, media.format, media.idMal, media.episodes);
+  const { sub, engDub, hindiDub } = await getEpisodesCached(media.title.romaji, media.title.english, media.format, media.id, media.episodes, media.seasonYear);
   
   return (
     <EpisodesList
@@ -187,11 +209,13 @@ async function EpisodesSidebar({ media, episodeId, fillerList }) {
   );
 }
 
-// Async component that resolves episode context and renders the player
-// Runs inside Suspense so it doesn't block the page shell from rendering
-async function WatchPlayerSection({ media, episodeId, serverData, fillerList }) {
-  const { sub, engDub, hindiDub } = await getEpisodesCached(media.title.romaji, media.title.english, media.format, media.idMal, media.episodes);
-  const isHindiDub = episodeId.startsWith("rareanimes-");
+async function WatchPlayerSection({ media, episodeId, fillerList }) {
+  const [episodeData, serverData] = await Promise.all([
+    getEpisodesCached(media.title.romaji, media.title.english, media.format, media.id, media.episodes, media.seasonYear),
+    getEpisodeServers(episodeId)
+  ]);
+  const { sub, engDub, hindiDub } = episodeData;
+  const isHindiDub = episodeId.startsWith("rareanimes-") || episodeId.startsWith("toonstream-");
   let episodes = sub;
   if (isHindiDub) {
     episodes = hindiDub;
@@ -210,7 +234,7 @@ async function WatchPlayerSection({ media, episodeId, serverData, fillerList }) 
 
   return (
     <WatchPlayer
-      initialServers={serverData.servers}
+      initialServers={serverData?.servers || []}
       episodeSlug={episodeId}
       nextEpisodeSlug={nextEp?.slug}
       animeId={media.id}
@@ -220,46 +244,65 @@ async function WatchPlayerSection({ media, episodeId, serverData, fillerList }) 
       episodeNumber={currentEpNumber}
       episodeTitle={epLabel}
       language={resolvedLang}
+      episodeLength={media.duration ? media.duration * 60 : 1440}
       episodes={episodes}
       fillerList={fillerList}
     />
   );
 }
 
-export default async function Watch({ params, searchParams }) {
+function WatchPageSkeleton() {
+  return (
+    <main className="main-container watch-main" style={{ marginTop: 24 }}>
+      <div className="watch-header skeleton" style={{ height: 40, width: "60%", marginBottom: 24, borderRadius: 8 }} />
+      
+      <div className="watch-grid">
+        <div className="watch-left">
+          <div className="player-placeholder glass-panel skeleton" style={{ aspectRatio: "16 / 9" }}>
+            <div className="placeholder-content">
+              <div className="loading-spinner" />
+              <p>Loading player...</p>
+            </div>
+          </div>
+          
+          <div className="watch-controls glass-panel skeleton" style={{ height: 70 }} />
+          
+          <div className="watch-meta-details glass-panel skeleton" style={{ height: 200 }} />
+        </div>
+        
+        <div className="watch-right">
+          <div className="episodes-sidebar glass-panel skeleton" style={{ height: 600 }} />
+        </div>
+      </div>
+    </main>
+  );
+}
+
+async function WatchContent({ params, searchParams }) {
   const { episodeId } = await params;
   const sParams = await searchParams;
   const animeId = sParams.animeId;
 
   if (!animeId) {
     return (
-      <>
-        <Navbar />
-        <div className="main-container error-container">
-          <h2>Invalid Watch Link</h2>
-          <p>Missing anime context. Return to search or home.</p>
-          <Link href="/" className="glow-btn">Back to Home</Link>
-        </div>
-      </>
+      <div className="main-container error-container">
+        <h2>Invalid Watch Link</h2>
+        <p>Missing anime context. Return to search or home.</p>
+        <Link href="/" className="glow-btn">Back to Home</Link>
+      </div>
     );
   }
 
-  // Fetch AniList metadata + episode servers in parallel — this is all we need to start rendering
-  const [media, serverData] = await Promise.all([
-    getAnimeDetails(animeId),
-    getEpisodeServers(episodeId)
-  ]);
+  // Fetch AniList metadata — this is all we need to start rendering immediately
+  const media = await getAnimeDetails(animeId);
 
   if (!media) {
     return (
-      <>
-        <Navbar />
-        <div className="main-container error-container">
-          <h2>Anime not found</h2>
-          <p>We couldn&apos;t retrieve the details for this anime.</p>
-          <Link href="/" className="glow-btn">Back to Home</Link>
-        </div>
-      </>
+      <div className="main-container error-container">
+        <h2>Anime not found</h2>
+        <p>We couldn&apos;t retrieve the details for this anime.</p>
+        <Link href="/" className="glow-btn">Back to Home</Link>
+      </div>
     );
   }
 
@@ -274,28 +317,30 @@ export default async function Watch({ params, searchParams }) {
   const epLabel = epNumFallback ? `Episode ${epNumFallback}` : "Streaming";
 
   return (
-    <>
-      <Navbar />
-      
-      <main className="main-container watch-main">
-        {/* Breadcrumb / Title Info */}
-        <div className="watch-header">
-          <Link href={`/anime/${media.id}`} className="back-link">
-            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5">
-              <path strokeLinecap="round" strokeLinejoin="round" d="M15 19l-7-7 7-7" />
-            </svg>
-            Back to Details
-          </Link>
-          <h1 className="watch-title-text">
-            {displayTitle} <span className="ep-label-highlight">— {epLabel}</span>
-          </h1>
-        </div>
+    <main className="main-container watch-main">
+      {/* Breadcrumb / Title Info */}
+      <div className="watch-header">
+        <Link href={`/anime/${media.id}`} className="back-link">
+          <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5">
+            <path strokeLinecap="round" strokeLinejoin="round" d="M15 19l-7-7 7-7" />
+          </svg>
+          Back to Details
+        </Link>
+        <h1 className="watch-title-text">
+          {displayTitle} <span className="ep-label-highlight">— {epLabel}</span>
+        </h1>
+      </div>
 
-        {/* Watch Content Grid */}
-        <div className="watch-grid">
-          {/* Left Column: Player & Meta */}
-          <div className="watch-left">
-            {/* Player — Suspense lets the page shell render immediately while episode list resolves */}
+      {/* Watch Content Grid */}
+      <div className="watch-grid">
+        {/* Left Column: Player & Meta */}
+        <div className="watch-left">
+          {/* Player — Suspense lets the page shell render immediately while episode list resolves.
+               ErrorBoundary catches scraper failures so the rest of the page stays intact. */}
+          <ErrorBoundary
+            title="Player unavailable"
+            description="The video source couldn't be loaded. The upstream provider may be temporarily down."
+          >
             <Suspense fallback={
               <div className="player-placeholder glass-panel">
                 <div className="placeholder-content">
@@ -304,10 +349,12 @@ export default async function Watch({ params, searchParams }) {
                 </div>
               </div>
             }>
-              <WatchPlayerSection media={media} episodeId={episodeId} serverData={serverData} fillerList={fillerList} />
+              <WatchPlayerSection media={media} episodeId={episodeId} fillerList={fillerList} />
             </Suspense>
+          </ErrorBoundary>
 
-            {/* Navigation & Controls */}
+          {/* Navigation & Controls */}
+          <ErrorBoundary title="Navigation unavailable" description="Episode navigation couldn't be loaded.">
             <Suspense fallback={
               <div className="watch-controls glass-panel" style={{ opacity: 0.5, height: '70px', animation: 'pulse 1.5s infinite' }}>
                 <div style={{ textAlign: "center", lineHeight: "38px" }}>Loading controls...</div>
@@ -315,34 +362,36 @@ export default async function Watch({ params, searchParams }) {
             }>
               <WatchControls media={media} episodeId={episodeId} />
             </Suspense>
+          </ErrorBoundary>
 
-            {/* Details panel */}
-            <div className="watch-meta-details glass-panel">
-              <div className="watch-meta-flex">
-                <Image
-                  src={media.coverImage.large}
-                  alt={displayTitle}
-                  className="watch-meta-poster"
-                  width={110}
-                  height={160}
-                />
-                <div className="watch-meta-info">
-                  <h3>{displayTitle}</h3>
-                  <div className="watch-meta-tags">
-                    <span className="meta-tag rating">★ {media.averageScore ? (media.averageScore / 10).toFixed(1) : "N/A"}</span>
-                    <span className="meta-tag format">{media.format || "TV"}</span>
-                    <span className="meta-tag year">{media.seasonYear}</span>
-                  </div>
-                  <p className="watch-meta-desc">
-                    {media.description ? media.description.replace(/<[^>]*>/g, "") : "No description available."}
-                  </p>
+          {/* Details panel */}
+          <div className="watch-meta-details glass-panel">
+            <div className="watch-meta-flex">
+              <Image
+                src={media.coverImage.large}
+                alt={displayTitle}
+                className="watch-meta-poster"
+                width={110}
+                height={160}
+              />
+              <div className="watch-meta-info">
+                <h3>{displayTitle}</h3>
+                <div className="watch-meta-tags">
+                  <span className="meta-tag rating">★ {media.averageScore ? (media.averageScore / 10).toFixed(1) : "N/A"}</span>
+                  <span className="meta-tag format">{media.format || "TV"}</span>
+                  <span className="meta-tag year">{media.seasonYear}</span>
                 </div>
+                <p className="watch-meta-desc">
+                  {media.description ? media.description.replace(/<[^>]*>/g, "") : "No description available."}
+                </p>
               </div>
             </div>
           </div>
+        </div>
 
-          {/* Right Column: Episode Sidebar */}
-          <div className="watch-right">
+        {/* Right Column: Episode Sidebar */}
+        <div className="watch-right">
+          <ErrorBoundary title="Episode list unavailable" description="The episode list couldn't be loaded. Try refreshing the page.">
             <Suspense fallback={
               <div className="episodes-sidebar glass-panel" style={{ opacity: 0.5 }}>
                 <h3 className="sidebar-title">Episodes</h3>
@@ -353,9 +402,20 @@ export default async function Watch({ params, searchParams }) {
             }>
               <EpisodesSidebar media={media} episodeId={episodeId} fillerList={fillerList} />
             </Suspense>
-          </div>
+          </ErrorBoundary>
         </div>
-      </main>
+      </div>
+    </main>
+  );
+}
+
+export default function Watch({ params, searchParams }) {
+  return (
+    <>
+      <Navbar />
+      <Suspense fallback={<WatchPageSkeleton />}>
+        <WatchContent params={params} searchParams={searchParams} />
+      </Suspense>
     </>
   );
 }

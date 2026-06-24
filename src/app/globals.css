@@ -73,6 +73,45 @@ html, body {
   border-color: rgba(255, 255, 255, 0.15);
 }
 
+/* ── Error Boundary fallback card ───────────────────────────────────────── */
+.error-boundary-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
+  padding: 2.5rem 2rem;
+  text-align: center;
+  color: var(--text-secondary, #a0aec0);
+  min-height: 180px;
+}
+
+.error-boundary-card svg {
+  color: var(--primary, #a855f7);
+  opacity: 0.8;
+}
+
+.error-boundary-title {
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--text-primary, #e2e8f0);
+  margin: 0;
+}
+
+.error-boundary-desc {
+  font-size: 0.85rem;
+  margin: 0;
+  max-width: 340px;
+  line-height: 1.5;
+}
+
+.error-boundary-retry {
+  margin-top: 0.5rem;
+  font-size: 0.85rem;
+  padding: 0.4rem 1.2rem;
+}
+/* ──────────────────────────────────────────────────────────────────────── */
+
 .glass-card {
   background: var(--background-card);
   backdrop-filter: blur(8px);
@@ -541,6 +580,7 @@ a {
   gap: 4px;
   z-index: 2;
   box-shadow: 0 4px 10px rgba(0, 0, 0, 0.3);
+  transition: opacity 0.3s ease;
 }
 .star-icon {
   color: #facc15;
@@ -559,6 +599,95 @@ a {
   z-index: 2;
   box-shadow: 0 4px 10px rgba(168, 85, 247, 0.3);
   border: 1px solid rgba(255, 255, 255, 0.1);
+  transition: opacity 0.3s ease;
+}
+.anime-card:hover .card-rating-badge,
+.anime-card:hover .card-format-badge {
+  opacity: 0;
+}
+.card-hover-overlay {
+  position: absolute;
+  bottom: -100%;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background: rgba(8, 7, 15, 0.9);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  z-index: 3;
+  transition: bottom 0.4s cubic-bezier(0.2, 0.8, 0.2, 1);
+  border-top: 1px solid rgba(255, 255, 255, 0.05);
+}
+.anime-card:hover .card-hover-overlay {
+  bottom: 0;
+}
+
+/* Staggered entry animations for overlay contents */
+.card-hover-overlay > * {
+  opacity: 0;
+  transform: translateY(10px);
+  transition: opacity 0.3s cubic-bezier(0.2, 0.8, 0.2, 1), transform 0.3s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.anime-card:hover .card-hover-overlay > * {
+  opacity: 1;
+  transform: translateY(0);
+}
+.anime-card:hover .card-hover-overlay .hover-genres {
+  transition-delay: 0.08s;
+}
+.anime-card:hover .card-hover-overlay .hover-desc {
+  transition-delay: 0.14s;
+}
+.anime-card:hover .card-hover-overlay .hover-action-text {
+  transition-delay: 0.2s;
+}
+
+.hover-genres {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+.hover-genre-tag {
+  font-size: 0.62rem;
+  font-weight: 700;
+  background: rgba(168, 85, 247, 0.15);
+  color: var(--primary);
+  padding: 2px 7px;
+  border-radius: 10px;
+  border: 1px solid rgba(168, 85, 247, 0.35);
+  letter-spacing: 0.02em;
+}
+.hover-desc {
+  font-size: 0.74rem;
+  line-height: 1.45;
+  color: var(--text-muted);
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  /* autoprefixer: ignore next */
+  -webkit-box-orient: vertical;
+  max-height: 4.3rem; /* Fallback when clean-css / autoprefixer strips box-orient */
+  overflow: hidden;
+  margin-bottom: 10px;
+}
+.hover-action-text {
+  margin-top: auto;
+  font-size: 0.72rem;
+  font-weight: 800;
+  color: var(--secondary);
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  text-shadow: 0 0 8px var(--secondary-glow);
+}
+.play-icon-mini {
+  color: var(--secondary);
+  filter: drop-shadow(0 0 4px var(--secondary-glow));
 }
 .card-details {
   padding: 12px;
@@ -966,6 +1095,44 @@ a {
   color: var(--text-muted);
   font-size: 0.98rem;
   line-height: 1.7;
+  transition: max-height 0.3s ease;
+}
+.detail-desc.clamped {
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.description-container {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.desc-toggle-btn {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: rgba(168, 85, 247, 0.08);
+  border: 1px solid rgba(168, 85, 247, 0.2);
+  color: var(--primary);
+  padding: 6px 14px;
+  border-radius: 20px;
+  font-size: 0.8rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: var(--transition-smooth);
+}
+.desc-toggle-btn:hover {
+  background: rgba(168, 85, 247, 0.16);
+  border-color: rgba(168, 85, 247, 0.35);
+  box-shadow: 0 0 10px rgba(168, 85, 247, 0.2);
+}
+.desc-toggle-icon {
+  transition: transform 0.3s ease;
+}
+.desc-toggle-icon.rotated {
+  transform: rotate(180deg);
 }
 .episodes-section {
   padding: 24px;
@@ -3088,4 +3255,286 @@ a {
 .episode-btn .ep-num-text {
   font-weight: 700;
 }
+
+/* Episode Search & Range Tabs Styles */
+.episode-search-wrapper {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  width: 160px;
+}
+
+.episode-search-input {
+  width: 100%;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--border-glass);
+  color: var(--text-main);
+  padding: 6px 12px;
+  padding-right: 28px;
+  border-radius: 18px;
+  font-size: 0.82rem;
+  font-weight: 500;
+  outline: none;
+  transition: var(--transition-smooth);
+}
+
+.episode-search-input:focus {
+  border-color: var(--primary);
+  background: rgba(255, 255, 255, 0.08);
+  box-shadow: 0 0 10px rgba(168, 85, 247, 0.15);
+}
+
+.search-clear-btn {
+  position: absolute;
+  right: 10px;
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-size: 1.1rem;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  transition: var(--transition-smooth);
+}
+
+.search-clear-btn:hover {
+  color: var(--text-main);
+  transform: scale(1.1);
+}
+
+/* Custom range dropdown container */
+.custom-range-dropdown {
+  position: relative;
+  display: inline-block;
+  width: 160px;
+  z-index: 50;
+}
+
+/* Trigger button style */
+.dropdown-trigger {
+  width: 100%;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--border-glass);
+  color: var(--text-main);
+  padding: 6px 14px;
+  border-radius: 18px;
+  font-size: 0.82rem;
+  font-weight: 600;
+  cursor: pointer;
+  outline: none;
+  transition: var(--transition-smooth);
+}
+
+.dropdown-trigger:hover, .dropdown-trigger.open {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: var(--primary);
+  box-shadow: 0 0 10px rgba(168, 85, 247, 0.15);
+}
+
+.dropdown-chevron {
+  transition: transform 0.3s ease;
+  color: var(--text-muted);
+}
+
+.dropdown-trigger.open .dropdown-chevron {
+  transform: rotate(180deg);
+  color: var(--primary);
+}
+
+/* Dropdown list menu styles */
+.dropdown-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  width: 100%;
+  max-height: 240px;
+  overflow-y: auto;
+  padding: 6px;
+  margin: 0;
+  list-style: none;
+  background: #0f0b21 !important;
+  border: 1px solid var(--border-glass);
+  border-radius: 12px;
+  box-shadow: var(--glass-shadow), 0 10px 25px rgba(0, 0, 0, 0.5);
+  animation: dropdownFadeIn 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+@keyframes dropdownFadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(-8px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+/* Menu items style */
+.dropdown-item {
+  width: 100%;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  padding: 8px 12px;
+  border-radius: 8px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+  transition: var(--transition-smooth);
+}
+
+.dropdown-item:hover {
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--text-main);
+}
+
+.dropdown-item.active {
+  background: rgba(168, 85, 247, 0.12);
+  color: var(--primary);
+  border: 1px solid rgba(168, 85, 247, 0.2);
+}
+
+.checkmark-icon {
+  color: var(--primary);
+  filter: drop-shadow(0 0 4px var(--primary-glow));
+}
+
+/* Row wrapper for range tabs and search box in grid variant */
+.episodes-controls-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 20px;
+  width: 100%;
+}
+
+.empty-ranges-spacer {
+  flex: 1;
+}
+
+/* Stacked controls in sidebar variant */
+.sidebar-episodes-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 12px;
+  width: 100%;
+}
+
+/* Mobile responsive adjustments for episodes section */
+@media (max-width: 640px) {
+  .episodes-section {
+    padding: 16px;
+  }
+  
+  .episodes-controls-row {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 12px;
+  }
+  
+  .episodes-controls-row .custom-range-dropdown {
+    width: 100%;
+  }
+  
+  .episodes-controls-row .episode-search-wrapper {
+    width: 100%;
+  }
+  
+  .empty-ranges-spacer {
+    display: none;
+  }
+}
+
+/* Section header layout with View All button */
+.section-header-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 24px;
+}
+
+.section-header-row .section-title {
+  margin-bottom: 0;
+}
+
+.view-all-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border-glass);
+  color: var(--text-muted);
+  padding: 6px 14px;
+  border-radius: 16px;
+  font-size: 0.82rem;
+  font-weight: 600;
+  text-decoration: none;
+  transition: var(--transition-smooth);
+}
+
+.view-all-btn:hover {
+  background: var(--primary);
+  color: white;
+  border-color: var(--primary);
+  box-shadow: 0 0 10px var(--primary-glow);
+  transform: translateY(-1px);
+}
+
+.view-all-btn svg {
+  transition: transform 0.2s ease;
+}
+
+.view-all-btn:hover svg {
+  transform: translateX(3px);
+}
+
+  @media (max-width: 480px) {
+  .section-header-row {
+    gap: 8px;
+  }
+  .view-all-btn {
+    padding: 4px 10px;
+    font-size: 0.76rem;
+    border-radius: 12px;
+  }
+}
+
+.search-page-title {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.page-badge {
+  font-size: 0.78rem;
+  font-weight: 700;
+  background: rgba(168, 85, 247, 0.15);
+  border: 1px solid rgba(168, 85, 247, 0.35);
+  color: var(--primary);
+  padding: 4px 10px;
+  border-radius: 12px;
+  box-shadow: 0 0 10px rgba(168, 85, 247, 0.1);
+  display: inline-flex;
+  align-items: center;
+  vertical-align: middle;
+  letter-spacing: 0.02em;
+}
+
+
+
+
 

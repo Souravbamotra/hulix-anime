@@ -1,8 +1,82 @@
 "use client";
 
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo, useEffect, useRef } from "react";
 import Link from "next/link";
 import EpisodeProgressBar from "./EpisodeProgressBar";
+
+function EpisodeRangeDropdown({ ranges, activeRangeIndex, setActiveRangeIndex }) {
+  const [isOpen, setIsOpen] = useState(false);
+  const containerRef = useRef(null);
+
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      if (containerRef.current && !containerRef.current.contains(event.target)) {
+        setIsOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
+
+  const activeRange = ranges.find((r) => r.index === activeRangeIndex) || ranges[0];
+
+  return (
+    <div className="custom-range-dropdown" ref={containerRef}>
+      <button
+        type="button"
+        className={`dropdown-trigger ${isOpen ? "open" : ""}`}
+        onClick={() => setIsOpen(!isOpen)}
+      >
+        <span>{activeRange.start}-{activeRange.end}</span>
+        <svg
+          xmlns="http://www.w3.org/2000/svg"
+          width="14"
+          height="14"
+          fill="none"
+          viewBox="0 0 24 24"
+          stroke="currentColor"
+          strokeWidth="2.5"
+          className="dropdown-chevron"
+        >
+          <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+        </svg>
+      </button>
+
+      {isOpen && (
+        <ul className="dropdown-menu glass-panel">
+          {ranges.map((r) => (
+            <li key={r.index}>
+              <button
+                type="button"
+                className={`dropdown-item ${activeRangeIndex === r.index ? "active" : ""}`}
+                onClick={() => {
+                  setActiveRangeIndex(r.index);
+                  setIsOpen(false);
+                }}
+              >
+                <span className="item-text">{r.start}-{r.end}</span>
+                {activeRangeIndex === r.index && (
+                  <svg
+                    xmlns="http://www.w3.org/2000/svg"
+                    width="12"
+                    height="12"
+                    fill="none"
+                    viewBox="0 0 24 24"
+                    stroke="currentColor"
+                    strokeWidth="3"
+                    className="checkmark-icon"
+                  >
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                  </svg>
+                )}
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
 
 export default function EpisodesList({
   subEpisodes = [],
@@ -39,8 +113,8 @@ export default function EpisodesList({
 
   const initialTab = useMemo(() => {
     if (currentEpisodeId) {
-      // Hindi dub episodes from RareAnimes start with "rareanimes-"
-      if (currentEpisodeId.startsWith("rareanimes-")) {
+      // Hindi dub episodes start with "rareanimes-" or "toonstream-"
+      if (currentEpisodeId.startsWith("rareanimes-") || currentEpisodeId.startsWith("toonstream-")) {
         return hasHindiDub ? "hindiDub" : "sub";
       }
       // Check if current episode is in engDub list
@@ -114,6 +188,57 @@ export default function EpisodesList({
     });
   }, [episodes, hideFillers, hasFillers, fillerList, isMounted]);
 
+  // Range and search logic
+  const [searchQuery, setSearchQuery] = useState("");
+  const CHUNK_SIZE = 100;
+
+  const ranges = useMemo(() => {
+    const list = [];
+    const count = filteredEpisodes.length;
+    if (count <= CHUNK_SIZE) return list;
+    
+    for (let i = 0; i < count; i += CHUNK_SIZE) {
+      const start = i + 1;
+      const end = Math.min(i + CHUNK_SIZE, count);
+      list.push({ start, end, index: i / CHUNK_SIZE });
+    }
+    return list;
+  }, [filteredEpisodes]);
+
+  const initialRangeIndex = useMemo(() => {
+    if (!currentEpisodeId || filteredEpisodes.length === 0) return 0;
+    const idx = filteredEpisodes.findIndex(ep => ep.slug === currentEpisodeId);
+    if (idx === -1) return 0;
+    return Math.floor(idx / CHUNK_SIZE);
+  }, [currentEpisodeId, filteredEpisodes]);
+
+  const [activeRangeIndex, setActiveRangeIndex] = useState(initialRangeIndex);
+  const [prevInitialRangeIndex, setPrevInitialRangeIndex] = useState(initialRangeIndex);
+  const [prevActiveTab, setPrevActiveTab] = useState(activeTab);
+
+  if (initialRangeIndex !== prevInitialRangeIndex) {
+    setPrevInitialRangeIndex(initialRangeIndex);
+    setActiveRangeIndex(initialRangeIndex);
+  }
+
+  if (activeTab !== prevActiveTab) {
+    setPrevActiveTab(activeTab);
+    setActiveRangeIndex(initialRangeIndex);
+  }
+
+  const displayedEpisodes = useMemo(() => {
+    if (searchQuery.trim()) {
+      const q = searchQuery.trim().toLowerCase();
+      return filteredEpisodes.filter(ep => ep.number.toString().toLowerCase() === q || ep.number.toString().toLowerCase().includes(q));
+    }
+    
+    if (ranges.length === 0) return filteredEpisodes;
+    
+    const startIdx = activeRangeIndex * CHUNK_SIZE;
+    const endIdx = startIdx + CHUNK_SIZE;
+    return filteredEpisodes.slice(startIdx, endIdx);
+  }, [filteredEpisodes, ranges, activeRangeIndex, searchQuery]);
+
   const renderTabs = () => {
     if (!showTabs) return null;
     return (
@@ -160,45 +285,77 @@ export default function EpisodesList({
         
         {renderTabs()}
 
+        {/* Search and Ranges for Sidebar */}
+        {filteredEpisodes.length > 0 && (
+          <div className="sidebar-episodes-controls">
+            <div className="episode-search-wrapper">
+              <input
+                type="text"
+                placeholder="Jump to ep..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className="episode-search-input"
+              />
+              {searchQuery && (
+                <button onClick={() => setSearchQuery("")} className="search-clear-btn">×</button>
+              )}
+            </div>
+
+            {ranges.length > 0 && !searchQuery && (
+              <EpisodeRangeDropdown
+                ranges={ranges}
+                activeRangeIndex={activeRangeIndex}
+                setActiveRangeIndex={setActiveRangeIndex}
+              />
+            )}
+          </div>
+        )}
+
         <div className="sidebar-list">
           {filteredEpisodes.length > 0 ? (
-            filteredEpisodes.map((ep) => {
-              const isActive = ep.slug === currentEpisodeId;
-              const resolvedLang = activeTab === "engDub" ? "dub" : (activeTab === "hindiDub" ? "hindi" : "sub");
-              const epNum = parseFloat(ep.number);
-              const status = fillerList[epNum];
-              
-              let statusClass = "";
-              let statusLabel = "";
-              if (status === "filler") {
-                statusClass = "filler-badge-filler";
-                statusLabel = "Filler";
-              } else if (status === "mixed") {
-                statusClass = "filler-badge-mixed";
-                statusLabel = "Mixed";
-              } else if (status === "anime_canon") {
-                statusClass = "filler-badge-anime-canon";
-                statusLabel = "Anime Canon";
-              }
+            displayedEpisodes.length > 0 ? (
+              displayedEpisodes.map((ep) => {
+                const isActive = ep.slug === currentEpisodeId;
+                const resolvedLang = activeTab === "engDub" ? "dub" : (activeTab === "hindiDub" ? "hindi" : "sub");
+                const epNum = parseFloat(ep.number);
+                const status = fillerList[epNum];
+                
+                let statusClass = "";
+                let statusLabel = "";
+                if (status === "filler") {
+                  statusClass = "filler-badge-filler";
+                  statusLabel = "Filler";
+                } else if (status === "mixed") {
+                  statusClass = "filler-badge-mixed";
+                  statusLabel = "Mixed";
+                } else if (status === "anime_canon") {
+                  statusClass = "filler-badge-anime-canon";
+                  statusLabel = "Anime Canon";
+                }
 
-              return (
-                <Link
-                  key={ep.slug}
-                  href={`/watch/${ep.slug}?animeId=${animeId}`}
-                  className={`sidebar-item ${isActive ? "active" : ""} ${status ? `has-status ${status}` : ""}`}
-                  style={{ position: "relative", overflow: "hidden" }}
-                >
-                  <div className="sidebar-ep-details">
-                    <span className="sidebar-ep-num">EP {ep.number}</span>
-                    {statusLabel && (
-                      <span className={`filler-badge ${statusClass}`}>{statusLabel}</span>
-                    )}
-                  </div>
-                  {isActive && <span className="playing-dot" />}
-                  <EpisodeProgressBar episodeId={ep.slug} language={resolvedLang} />
-                </Link>
-              );
-            })
+                return (
+                  <Link
+                    key={ep.slug}
+                    href={`/watch/${ep.slug}?animeId=${animeId}`}
+                    className={`sidebar-item ${isActive ? "active" : ""} ${status ? `has-status ${status}` : ""}`}
+                    style={{ position: "relative", overflow: "hidden" }}
+                  >
+                    <div className="sidebar-ep-details">
+                      <span className="sidebar-ep-num">EP {ep.number}</span>
+                      {statusLabel && (
+                        <span className={`filler-badge ${statusClass}`}>{statusLabel}</span>
+                      )}
+                    </div>
+                    {isActive && <span className="playing-dot" />}
+                    <EpisodeProgressBar episodeId={ep.slug} language={resolvedLang} />
+                  </Link>
+                );
+              })
+            ) : (
+              <div style={{ padding: "1rem", textAlign: "center", opacity: 0.7 }}>
+                No episodes match &quot;{searchQuery}&quot;
+              </div>
+            )
           ) : (
             <div style={{ padding: "1rem", textAlign: "center", opacity: 0.7 }}>
               No episodes found
@@ -226,42 +383,76 @@ export default function EpisodesList({
 
       {renderTabs()}
 
-      {filteredEpisodes.length > 0 ? (
-        <div className="episodes-grid">
-          {filteredEpisodes.map((episode) => {
-            const resolvedLang = activeTab === "engDub" ? "dub" : (activeTab === "hindiDub" ? "hindi" : "sub");
-            const epNum = parseFloat(episode.number);
-            const status = fillerList[epNum];
-            
-            let statusClass = "";
-            let statusLabel = "";
-            if (status === "filler") {
-              statusClass = "filler-badge-filler";
-              statusLabel = "Filler";
-            } else if (status === "mixed") {
-              statusClass = "filler-badge-mixed";
-              statusLabel = "Mixed";
-            } else if (status === "anime_canon") {
-              statusClass = "filler-badge-anime-canon";
-              statusLabel = "Anime Canon";
-            }
+      {/* Search and Ranges */}
+      {filteredEpisodes.length > 0 && (
+        <div className="episodes-controls-row">
+          {ranges.length > 0 && !searchQuery ? (
+            <EpisodeRangeDropdown
+              ranges={ranges}
+              activeRangeIndex={activeRangeIndex}
+              setActiveRangeIndex={setActiveRangeIndex}
+            />
+          ) : (
+            <div className="empty-ranges-spacer" />
+          )}
 
-            return (
-              <Link
-                key={episode.slug}
-                href={`/watch/${episode.slug}?animeId=${animeId}`}
-                className={`episode-btn ${status ? `has-status ${status}` : ""}`}
-                style={{ position: "relative", overflow: "hidden" }}
-              >
-                <span className="ep-num-text">EP {episode.number}</span>
-                {statusLabel && (
-                  <span className={`filler-badge ${statusClass}`}>{statusLabel}</span>
-                )}
-                <EpisodeProgressBar episodeId={episode.slug} language={resolvedLang} />
-              </Link>
-            );
-          })}
+          <div className="episode-search-wrapper">
+            <input
+              type="text"
+              placeholder="Jump to ep..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="episode-search-input"
+            />
+            {searchQuery && (
+              <button onClick={() => setSearchQuery("")} className="search-clear-btn">×</button>
+            )}
+          </div>
         </div>
+      )}
+
+      {filteredEpisodes.length > 0 ? (
+        displayedEpisodes.length > 0 ? (
+          <div className="episodes-grid">
+            {displayedEpisodes.map((episode) => {
+              const resolvedLang = activeTab === "engDub" ? "dub" : (activeTab === "hindiDub" ? "hindi" : "sub");
+              const epNum = parseFloat(episode.number);
+              const status = fillerList[epNum];
+              
+              let statusClass = "";
+              let statusLabel = "";
+              if (status === "filler") {
+                statusClass = "filler-badge-filler";
+                statusLabel = "Filler";
+              } else if (status === "mixed") {
+                statusClass = "filler-badge-mixed";
+                statusLabel = "Mixed";
+              } else if (status === "anime_canon") {
+                statusClass = "filler-badge-anime-canon";
+                statusLabel = "Anime Canon";
+              }
+
+              return (
+                <Link
+                  key={episode.slug}
+                  href={`/watch/${episode.slug}?animeId=${animeId}`}
+                  className={`episode-btn ${status ? `has-status ${status}` : ""}`}
+                  style={{ position: "relative", overflow: "hidden" }}
+                >
+                  <span className="ep-num-text">EP {episode.number}</span>
+                  {statusLabel && (
+                    <span className={`filler-badge ${statusClass}`}>{statusLabel}</span>
+                  )}
+                  <EpisodeProgressBar episodeId={episode.slug} language={resolvedLang} />
+                </Link>
+              );
+            })}
+          </div>
+        ) : (
+          <div style={{ padding: "2rem", textAlign: "center", opacity: 0.7 }}>
+            No episodes match &quot;{searchQuery}&quot;
+          </div>
+        )
       ) : (
         <div className="no-episodes">
           <svg xmlns="http://www.w3.org/2000/svg" width="36" height="36" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.5">

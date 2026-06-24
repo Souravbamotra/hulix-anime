@@ -3,14 +3,41 @@ import { NextResponse } from "next/server";
 /**
  * API route to extract direct MP4/video stream URLs from embed pages.
  * Works specifically with megaplay.su embeds which serve JWPlayer + direct MP4.
- * 
+ *
  * Query params:
  *   embedUrl - The embed page URL to extract from
- * 
+ *
  * Returns:
  *   { directUrl, thumbnailUrl, type } on success
  *   { error } on failure
  */
+
+/**
+ * Allowlist of hostnames (and their subdomains) that we are allowed to
+ * scrape server-side.  Mirrors the set in proxy-stream/route.js.
+ */
+const ALLOWED_EMBED_HOSTS = new Set([
+  "anidap.se",
+  "argon.razorshell.space",
+  "razorshell.space",
+  "codedew.com",
+  "streambeta.net",
+  "multiquality.net",
+  "megaplay.su",
+  "24stream.xyz",
+  "vibeplayer.site",
+  "gogoanimes.cv",
+]);
+
+function isAllowedEmbedHost(hostname) {
+  if (ALLOWED_EMBED_HOSTS.has(hostname)) return true;
+  const parts = hostname.split(".");
+  for (let i = 1; i < parts.length - 1; i++) {
+    if (ALLOWED_EMBED_HOSTS.has(parts.slice(i).join("."))) return true;
+  }
+  return false;
+}
+
 export async function GET(request) {
   const { searchParams } = new URL(request.url);
   const embedUrl = searchParams.get("embedUrl");
@@ -18,6 +45,23 @@ export async function GET(request) {
   if (!embedUrl) {
     return NextResponse.json({ error: "Missing embedUrl parameter" }, { status: 400 });
   }
+
+  // --- Security: reject embed URLs not belonging to known anime sources ---
+  let parsedEmbed;
+  try {
+    parsedEmbed = new URL(embedUrl);
+  } catch {
+    return NextResponse.json({ error: "Invalid embedUrl parameter" }, { status: 400 });
+  }
+
+  if (parsedEmbed.protocol !== "http:" && parsedEmbed.protocol !== "https:") {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  }
+
+  if (!isAllowedEmbedHost(parsedEmbed.hostname)) {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  }
+  // -----------------------------------------------------------------------
 
   const cacheHeaders = {
     "Cache-Control": "public, s-maxage=1800, stale-while-revalidate=3600"
@@ -30,7 +74,16 @@ export async function GET(request) {
       if (!result) {
         return NextResponse.json({ error: "Failed to extract AniDap stream" }, { status: 404 });
       }
-      return NextResponse.json(result, { headers: cacheHeaders });
+
+      const origin = new URL(request.url).origin;
+      const proxyBase = `${origin}/api/proxy-stream?url=`;
+
+      const proxiedResult = {
+        ...result,
+        directUrl: `${proxyBase}${encodeURIComponent(result.directUrl)}`
+      };
+
+      return NextResponse.json(proxiedResult, { headers: cacheHeaders });
     } catch (err) {
       return NextResponse.json({ error: err.message || "Failed to extract stream" }, { status: 500 });
     }

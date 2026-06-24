@@ -8,8 +8,12 @@ import {
   getGogoAnimeOverride,
   getRareAnimesOverrideBeforeCache,
   getRareAnimesOverrideAfterCache,
-  getAniListSeasonNum
+  getAniListSeasonNum,
+  getDoraemonEnglishTitle
 } from "./mappings.js";
+
+const LONG_CACHE_TTL = 30 * 24 * 60 * 60 * 1000; // 30 days
+
 
 // Force Node.js DNS to prefer IPv4 first to avoid DNS/IPv6 timeouts
 if (dns && typeof dns.setDefaultResultOrder === "function") {
@@ -57,6 +61,95 @@ function computeSimilarity(titleA, titleB) {
   const intersection = new Set([...wordsA].filter(x => wordsB.has(x)));
   
   return intersection.size / Math.max(wordsA.size, wordsB.size);
+}
+
+// Helper to generate search query variations for WordPress/search endpoints
+function getSearchQueries(romaji, english) {
+  const queries = [];
+  
+  if (romaji) queries.push(romaji);
+  if (english) queries.push(english);
+  
+  if (romaji) {
+    if (romaji.includes(":")) queries.push(romaji.split(":")[0].trim());
+    if (romaji.includes("-")) queries.push(romaji.split("-")[0].trim());
+  }
+  if (english) {
+    if (english.includes(":")) queries.push(english.split(":")[0].trim());
+    if (english.includes("-")) queries.push(english.split("-")[0].trim());
+  }
+  
+  return [...new Set(queries)].filter(Boolean);
+}
+
+// Verification helper to ensure we don't map to a completely different sub-series or incorrect release year.
+function verifyTitleMatch(aniListTitle, searchResultTitle, seasonYear = null) {
+  if (!aniListTitle || !searchResultTitle) return false;
+  
+  const cleanAniList = sanitizeTitle(aniListTitle);
+  const cleanResult = sanitizeTitle(searchResultTitle);
+  
+  const wordsAniList = cleanAniList.split(/\s+/).filter(Boolean);
+  const wordsResult = cleanResult.split(/\s+/).filter(Boolean);
+  
+  const setAniList = new Set(wordsAniList);
+  const setResult = new Set(wordsResult);
+  
+  const ignorableWords = new Set([
+    "hindi", "english", "tamil", "telugu", "bengali", "malayalam", "audio", "multi", "dubbed", "dub", "subbed", "sub",
+    "season", "seasons", "series", "episodes", "episode", "ep", "download", "hd", "fhd", "complete", "all",
+    "movie", "movies", "film", "films", "ova", "ovas", "special", "specials", "uncut", "uncensored", "censored",
+    "pack", "full", "collection", "dual", "org", "original", "bluray", "brrip", "webrip", "classic", "version",
+    "jio", "cinema", "crunchyroll", "netflix", "disney", "hotstar", "bilibili"
+  ]);
+  
+  // 1. Franchise sub-series word strict verification
+  // If one title specifies a sub-series keyword (e.g. "daima", "super", "gt", "kai", "heroes", "shippuden", "boruto", "z")
+  // then the other title MUST also contain it.
+  const franchiseSubSeries = new Set([
+    "daima", "super", "gt", "kai", "heroes", "shippuden", "boruto", "z"
+  ]);
+  
+  for (const word of franchiseSubSeries) {
+    const inAniList = setAniList.has(word);
+    const inResult = setResult.has(word);
+    if (inAniList !== inResult) {
+      return false;
+    }
+  }
+  
+  // 2. Year mismatch check (if year is present in both)
+  if (seasonYear) {
+    const yearMatch = cleanResult.match(/\b(19\d\d|20\d\d)\b/);
+    if (yearMatch) {
+      const resultYear = parseInt(yearMatch[1], 10);
+      if (Math.abs(resultYear - seasonYear) > 1) {
+        return false;
+      }
+    }
+  }
+  
+  // 3. Ensure search result key words are subset of the AniList key words
+  const mismatches = [];
+  for (const word of wordsResult) {
+    if (ignorableWords.has(word)) continue;
+    if (/^\d+$/.test(word)) continue;
+    if (!setAniList.has(word)) {
+      mismatches.push(word);
+    }
+  }
+  
+  if (mismatches.length > 0) {
+    return false;
+  }
+  
+  return true;
+}
+
+function verifyTitleMatchForAny(titleRomaji, titleEnglish, searchResultTitle, seasonYear = null) {
+  const matchRomaji = titleRomaji ? verifyTitleMatch(titleRomaji, searchResultTitle, seasonYear) : false;
+  const matchEnglish = titleEnglish ? verifyTitleMatch(titleEnglish, searchResultTitle, seasonYear) : false;
+  return matchRomaji || matchEnglish;
 }
 
 export async function searchGogoAnime(keyword) {
@@ -117,29 +210,35 @@ async function checkSlugExists(slug) {
   }
 }
 
-export async function findGogoAnimeSlug(aniListTitleRomaji, aniListTitleEnglish, format = "", isDub = false) {
+export async function findGogoAnimeSlug(aniListTitleRomaji, aniListTitleEnglish, format = "", isDub = false, seasonYear = null) {
+  if (!aniListTitleEnglish && aniListTitleRomaji) {
+    const fallbackEnglish = getDoraemonEnglishTitle(aniListTitleRomaji);
+    if (fallbackEnglish) {
+      aniListTitleEnglish = fallbackEnglish;
+    }
+  }
   const cacheKey = getCacheKey("gogo_slug", `${aniListTitleRomaji}_${aniListTitleEnglish}_${isDub}`);
-  const cached = await getCache(cacheKey);
+  const cached = await getCache(cacheKey, LONG_CACHE_TTL);
   if (cached) return cached;
   
   return deduplicateRequest(cacheKey, async () => {
-    const doubleCheck = await getCache(cacheKey);
+    const doubleCheck = await getCache(cacheKey, LONG_CACHE_TTL);
     if (doubleCheck) return doubleCheck;
     
-    const result = await findGogoAnimeSlugUncached(aniListTitleRomaji, aniListTitleEnglish, format, isDub);
+    const result = await findGogoAnimeSlugUncached(aniListTitleRomaji, aniListTitleEnglish, format, isDub, seasonYear);
     if (result) {
-      await setCache(cacheKey, result);
+      await setCache(cacheKey, result, LONG_CACHE_TTL);
     }
     return result;
   });
 }
 
 // Maps AniList titles to Gogoanime/9anime slug
-async function findGogoAnimeSlugUncached(aniListTitleRomaji, aniListTitleEnglish, format = "", isDub = false) {
+async function findGogoAnimeSlugUncached(aniListTitleRomaji, aniListTitleEnglish, format = "", isDub = false, seasonYear = null) {
   const override = getGogoAnimeOverride(aniListTitleRomaji, aniListTitleEnglish, isDub);
   if (override) return override;
 
-  const searchQueries = [aniListTitleRomaji, aniListTitleEnglish].filter(Boolean);
+  const searchQueries = getSearchQueries(aniListTitleRomaji, aniListTitleEnglish);
   
   for (const query of searchQueries) {
     const results = await searchGogoAnime(isDub ? `${query} (Dub)` : query);
@@ -150,6 +249,12 @@ async function findGogoAnimeSlugUncached(aniListTitleRomaji, aniListTitleEnglish
       for (const result of results) {
         // Clean title from "(Dub)" suffix for similarity matching
         const cleanTitle = result.title.replace(/\s*\(Dub\)$/i, "").replace(/\s+/g, " ").trim();
+        
+        // Strict Title & Year Verification
+        if (!verifyTitleMatchForAny(aniListTitleRomaji, aniListTitleEnglish, cleanTitle, seasonYear)) {
+          continue;
+        }
+        
         const scoreRomaji = computeSimilarity(cleanTitle, aniListTitleRomaji);
         const scoreEnglish = aniListTitleEnglish ? computeSimilarity(cleanTitle, aniListTitleEnglish) : 0;
         let score = Math.max(scoreRomaji, scoreEnglish);
@@ -413,6 +518,116 @@ async function resolveTrueEmbedUrl(url) {
  */
 async function getEpisodeServersUncached(episodeSlug) {
   try {
+    if (episodeSlug.startsWith("anidap-")) {
+      const parts = episodeSlug.split("-");
+      const malId = parts[1];
+      const epNum = parts[2];
+      const type = parts[3] || "sub";
+      
+      const server = {
+        category: type,
+        name: "AniDap",
+        type: "embed",
+        iframeUrl: `https://anidap.se/watch?id=${malId}&ep=${epNum}&type=${type}`,
+        sourceType: "hls"
+      };
+      
+      return {
+        servers: [server],
+        defaultServer: server
+      };
+    }
+
+    if (episodeSlug.startsWith("toonstream-")) {
+      const pagePath = episodeSlug.replace("toonstream-", "");
+      const url = `https://toonstream.vip/${pagePath}/`;
+      console.log(`[ToonStream] Fetching servers from: ${url}`);
+      
+      const res = await fetch(url, {
+        headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36" }
+      });
+      
+      if (!res.ok) {
+        console.warn(`[ToonStream] Servers fetch failed with status ${res.status} for episode: ${episodeSlug}`);
+        return { servers: [], defaultServer: null };
+      }
+      
+      const html = await res.text();
+      const $ = cheerio.load(html);
+      
+      let trid = null;
+      $("iframe").each((i, el) => {
+        const src = $(el).attr("src") || "";
+        const match = src.match(/[\?&]trid=(\d+)/);
+        if (match) {
+          trid = match[1];
+          return false;
+        }
+      });
+      
+      if (!trid) {
+        const tridMatch = html.match(/[\?&]trid=(\d+)/) || html.match(/trid['"]?\s*:\s*['"]?(\d+)/);
+        if (tridMatch) trid = tridMatch[1];
+      }
+      
+      if (!trid) {
+        console.warn(`[ToonStream] Could not resolve trid/post ID for episode: ${episodeSlug}`);
+        return { servers: [], defaultServer: null };
+      }
+      
+      console.log(`[ToonStream] Resolved trid: ${trid}`);
+      
+      const optionLinks = [];
+      $("a[href^='#options-']").each((i, el) => {
+        const href = $(el).attr("href");
+        const match = href.match(/#options-(\d+)/);
+        if (match) {
+          const trembed = parseInt(match[1], 10);
+          const serverSpan = $(el).find(".server");
+          if (serverSpan.length > 0) {
+            let serverName = serverSpan.text().trim();
+            const cleanedName = serverName.split(/\s*-\s*/)[0].trim();
+            optionLinks.push({ trembed, name: cleanedName });
+          }
+        }
+      });
+      
+      const resolvedServers = await Promise.all(optionLinks.map(async (opt) => {
+        const embedUrl = `https://toonstream.vip/?trembed=${opt.trembed}&trid=${trid}&trtype=2`;
+        try {
+          const embedRes = await fetch(embedUrl, {
+            headers: {
+              "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36",
+              "Referer": "https://toonstream.vip/"
+            }
+          });
+          if (embedRes.ok) {
+            const embedHtml = await embedRes.text();
+            const embed$ = cheerio.load(embedHtml);
+            const iframeUrl = embed$("iframe").first().attr("src");
+            if (iframeUrl) {
+              return {
+                category: "dub",
+                name: opt.name,
+                type: "embed",
+                iframeUrl,
+                sourceType: "iframe"
+              };
+            }
+          }
+        } catch (e) {
+          console.warn(`[ToonStream] Failed to resolve trembed=${opt.trembed} for trid=${trid}:`, e.message);
+        }
+        return null;
+      }));
+      
+      const activeServers = resolvedServers.filter(Boolean);
+      return {
+        servers: activeServers,
+        defaultServer: activeServers[0] || null
+      };
+    }
+
     if (episodeSlug.startsWith("rareanimes-")) {
       const match = episodeSlug.match(/^rareanimes-(.+)-episode-(\d+(\.\d+)?)$/);
       if (!match) {
@@ -649,21 +864,27 @@ async function searchRareAnimesUncached(keyword) {
   }
 }
 
-export async function findRareAnimesSlug(aniListTitleRomaji, aniListTitleEnglish, format = "") {
+export async function findRareAnimesSlug(aniListTitleRomaji, aniListTitleEnglish, format = "", seasonYear = null) {
+  if (!aniListTitleEnglish && aniListTitleRomaji) {
+    const fallbackEnglish = getDoraemonEnglishTitle(aniListTitleRomaji);
+    if (fallbackEnglish) {
+      aniListTitleEnglish = fallbackEnglish;
+    }
+  }
   const override = getRareAnimesOverrideBeforeCache(aniListTitleRomaji, aniListTitleEnglish);
   if (override) return override;
 
   const cacheKey = getCacheKey("rare_slug", `${aniListTitleRomaji}_${aniListTitleEnglish}`);
-  const cached = await getCache(cacheKey);
+  const cached = await getCache(cacheKey, LONG_CACHE_TTL);
   if (cached) return cached;
   
   return deduplicateRequest(cacheKey, async () => {
-    const doubleCheck = await getCache(cacheKey);
+    const doubleCheck = await getCache(cacheKey, LONG_CACHE_TTL);
     if (doubleCheck) return doubleCheck;
     
-    const result = await findRareAnimesSlugUncached(aniListTitleRomaji, aniListTitleEnglish, format);
+    const result = await findRareAnimesSlugUncached(aniListTitleRomaji, aniListTitleEnglish, format, seasonYear);
     if (result) {
-      await setCache(cacheKey, result);
+      await setCache(cacheKey, result, LONG_CACHE_TTL);
     }
     return result;
   });
@@ -735,7 +956,7 @@ async function resolveDoraemonMovieSlug(aniListTitleRomaji, aniListTitleEnglish)
   }
 }
 
-async function findRareAnimesSlugUncached(aniListTitleRomaji, aniListTitleEnglish, format = "") {
+async function findRareAnimesSlugUncached(aniListTitleRomaji, aniListTitleEnglish, format = "", seasonYear = null) {
   const cleanTitleRomaji = (aniListTitleRomaji || "").toLowerCase().trim();
   const cleanTitleEnglish = (aniListTitleEnglish || "").toLowerCase().trim();
   
@@ -762,7 +983,7 @@ async function findRareAnimesSlugUncached(aniListTitleRomaji, aniListTitleEnglis
     1
   );
 
-  const searchQueries = [aniListTitleRomaji, aniListTitleEnglish].filter(Boolean);
+  const searchQueries = getSearchQueries(aniListTitleRomaji, aniListTitleEnglish);
   
   for (const query of searchQueries) {
     const results = await searchRareAnimes(query);
@@ -777,6 +998,11 @@ async function findRareAnimesSlugUncached(aniListTitleRomaji, aniListTitleEnglis
         const isSubbed = lowerTitle.includes("subbed") || result.slug.includes("subbed");
         const isDubbed = lowerTitle.includes("dubbed") || lowerTitle.includes("dub") || result.slug.includes("dubbed") || result.slug.includes("dub");
         if (isSubbed && !isDubbed) {
+          continue;
+        }
+
+        // Strict Title & Year Verification
+        if (!verifyTitleMatchForAny(aniListTitleRomaji, aniListTitleEnglish, result.title, seasonYear)) {
           continue;
         }
 
@@ -820,8 +1046,13 @@ async function findRareAnimesSlugUncached(aniListTitleRomaji, aniListTitleEnglis
           const titleHasMovie = lowerTitle.includes("movie") || lowerTitle.includes("film") || result.slug.includes("-movie");
           if (isMovie !== titleHasMovie) continue; // Match format
           
+          // Strict Title & Year Verification for secondary seasons
+          if (!verifyTitleMatchForAny(aniListTitleRomaji, aniListTitleEnglish, result.title, seasonYear)) {
+            continue;
+          }
+          
           const baseResultTitle = cleanTitleForGrouping(result.title);
-          if (baseResultTitle === baseBestTitle || baseResultTitle.includes(baseBestTitle) || baseResultTitle.includes(baseResultTitle)) {
+          if (baseResultTitle === baseBestTitle || baseResultTitle.includes(baseBestTitle) || baseBestTitle.includes(baseResultTitle)) {
             const seasonNum = getSeasonNum(result.title);
             
             // If we are NOT combining seasons, filter out non-target seasons
@@ -868,33 +1099,46 @@ function parseEpisodesFromHtml(html, slug) {
   
   $(".entry-content").children().each((i, el) => {
     const text = $(el).text().trim();
-    const epMatch = text.match(/Episode\s*(\d+)(?:\s*–\s*(.*))?/i);
+    const epMatch = text.match(/(?:Episode|Ep)\s*0*(\d+)(?:\s*–\s*(.*))?/i);
     
     if (epMatch) {
-      currentEpisodeNum = parseInt(epMatch[1]);
-      currentEpisodeName = epMatch[2] ? epMatch[2].trim() : `Episode ${currentEpisodeNum}`;
-    } else if (currentEpisodeNum !== null) {
-      const linksInEl = [];
-      $(el).find("a").each((j, aEl) => {
-        const aText = $(aEl).text().trim();
-        const href = $(aEl).attr("href") || "";
-        
-        if (aText.includes("Watch") || aText.includes("Stream") || aText.includes("Mult") || aText.includes("Beta")) {
-          linksInEl.push({ label: aText, href });
+      const epNum = parseInt(epMatch[1], 10);
+      let epName = `Episode ${epNum}`;
+      if (epMatch[2]) {
+        const cleanName = epMatch[2].replace(/[–-\s]+/g, " ").trim();
+        if (cleanName && !cleanName.includes("[") && !cleanName.includes("Watch") && !cleanName.includes("Download")) {
+          epName = cleanName;
         }
-      });
-      
-      if (linksInEl.length > 0) {
-        const exists = episodes.find(e => e.number === currentEpisodeNum);
-        if (!exists) {
-          const safeSlug = slug.replace(/\//g, "__");
-          episodes.push({
-            number: currentEpisodeNum,
-            title: currentEpisodeName,
-            slug: `rareanimes-${safeSlug}-episode-${currentEpisodeNum}`,
-            links: linksInEl
-          });
-        }
+      }
+      currentEpisodeNum = epNum;
+      currentEpisodeName = epName;
+    }
+    
+    // Check for links inside THIS element
+    const linksInEl = [];
+    $(el).find("a").each((j, aEl) => {
+      const aText = $(aEl).text().trim();
+      const href = $(aEl).attr("href") || "";
+      if (href && (
+        aText.includes("Watch") || aText.includes("Stream") || aText.includes("Mult") || aText.includes("Beta") || 
+        aText.includes("Mega") || aText.includes("Gdrive") || aText.includes("Mirror") || aText.includes("Download")
+      )) {
+        linksInEl.push({ label: aText, href });
+      }
+    });
+    
+    if (linksInEl.length > 0 && currentEpisodeNum !== null) {
+      const exists = episodes.find(e => e.number === currentEpisodeNum);
+      if (!exists) {
+        const safeSlug = slug.replace(/\//g, "__");
+        episodes.push({
+          number: currentEpisodeNum,
+          title: currentEpisodeName,
+          slug: `rareanimes-${safeSlug}-episode-${currentEpisodeNum}`,
+          links: linksInEl
+        });
+      }
+      if (!epMatch) {
         currentEpisodeNum = null;
       }
     }
@@ -1043,6 +1287,8 @@ async function getRareAnimesEpisodesUncached(slug, isSubPage = false) {
         animeKey = "one piece";
       } else if (lowerSlug.includes("doraemon")) {
         animeKey = "doraemon";
+      } else if (lowerSlug.includes("dragon-ball") || lowerSlug.includes("dragon_ball")) {
+        animeKey = "dragon ball";
       }
       
       if (animeKey && RAREANIMES_SEASON_OFFSETS[animeKey] && RAREANIMES_SEASON_OFFSETS[animeKey][seasonNum] !== undefined) {
@@ -1138,7 +1384,34 @@ async function getRareAnimesEpisodesUncached(slug, isSubPage = false) {
         headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36" }
       });
       const linkerHtml = await linkerRes.text();
-      episodes = parseEpisodesFromHtml(linkerHtml, slug);
+      const finalLinkerUrl = linkerRes.url;
+      
+      if (finalLinkerUrl.includes("codedew.com/multiquality/") || finalLinkerUrl.includes("/multiquality/")) {
+        console.log(`[Scraper] Detected codedew multiquality page via linker redirect: ${finalLinkerUrl}`);
+        const $ = cheerio.load(linkerHtml);
+        let embedUrl = $("iframe").first().attr("src");
+        if (!embedUrl) {
+          const match = linkerHtml.match(/https?:\/\/argon\.razorshell\.space\/embed\/[a-zA-Z0-9]+/);
+          if (match) embedUrl = match[0];
+        }
+        if (embedUrl) {
+          console.log(`[Scraper] Extracted embed player URL from linker: ${embedUrl}`);
+          const safeSlug = slug.replace(/\//g, "__");
+          episodes = [{
+            number: 1,
+            title: "Movie / OVA",
+            slug: `rareanimes-${safeSlug}-episode-1`,
+            links: [
+              { label: "StreamBeta", href: embedUrl },
+              { label: "WatchMultiQuality", href: finalLinkerUrl }
+            ]
+          }];
+        } else {
+          episodes = parseEpisodesFromHtml(linkerHtml, slug);
+        }
+      } else {
+        episodes = parseEpisodesFromHtml(linkerHtml, slug);
+      }
       console.log(`[Scraper] Parsed ${episodes.length} episodes from linker page: ${linkerUrl}`);
     }
     
@@ -1457,11 +1730,11 @@ async function extractRareAnimesStreamUncached(embedUrl) {
 
 export async function getAnidapSlug(anilistId) {
   const cacheKey = getCacheKey("anidap_slug", String(anilistId));
-  const cached = await getCache(cacheKey);
+  const cached = await getCache(cacheKey, LONG_CACHE_TTL);
   if (cached) return cached;
   
   return deduplicateRequest(cacheKey, async () => {
-    const doubleCheck = await getCache(cacheKey);
+    const doubleCheck = await getCache(cacheKey, LONG_CACHE_TTL);
     if (doubleCheck) return doubleCheck;
     
     const url = `https://anidap.se/watch.data?id=${anilistId}&ep=1&type=sub&provider=yuki`;
@@ -1509,7 +1782,7 @@ export async function getAnidapSlug(anilistId) {
       });
       
       if (slug) {
-        await setCache(cacheKey, slug);
+        await setCache(cacheKey, slug, LONG_CACHE_TTL);
         console.log(`[AniDap] Resolved slug for AniList ID ${anilistId}: ${slug}`);
         return slug;
       }
@@ -1614,34 +1887,48 @@ export async function extractAnidapStream(embedUrl) {
       const slug = await getAnidapSlug(anilistId);
       if (!slug) throw new Error(`Could not resolve AniDap slug for AniList ID: ${anilistId}`);
       
-      const sourcesUrl = `https://chad.anidap.se/rest/api/sources?id=${slug}&epNum=${epNum}&type=${type}&providerId=yuki`;
-      const res = await fetch(sourcesUrl, {
-        headers: {
-          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36",
-          "Referer": "https://anidap.se/"
-        }
-      });
+      let data = null;
+      const providers = ["beep", "neko", "mimi", "yuki"];
       
-      if (!res.ok) {
-        throw new Error(`sources API returned status ${res.status}`);
+      for (const provider of providers) {
+        try {
+          const sourcesUrl = `https://chad.anidap.se/rest/api/sources?id=${slug}&epNum=${epNum}&type=${type}&providerId=${provider}`;
+          const res = await fetch(sourcesUrl, {
+            headers: {
+              "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36",
+              "Referer": "https://anidap.se/"
+            }
+          });
+          if (res.ok) {
+            const json = await res.json();
+            if (json.sources && json.sources.length > 0) {
+              data = json;
+              break;
+            }
+          }
+        } catch (e) {
+          console.warn(`[AniDap] Failed to fetch sources for provider ${provider}:`, e.message);
+        }
       }
       
-      const data = await res.json();
-      if (!data.sources || data.sources.length === 0) {
-        throw new Error("No sources found in AniDap API response");
+      if (!data) {
+        throw new Error("No sources found in AniDap API response across all providers");
       }
       
       const directUrl = data.sources[0].url;
+      let finalUrl = directUrl;
       
-      let hex = "";
-      for (let i = 0; i < directUrl.length; i++) {
-        const code = directUrl.charCodeAt(i) ^ 137;
-        hex += code.toString(16).padStart(2, "0");
+      if (directUrl.includes("mewstream.buzz")) {
+        let hex = "";
+        for (let i = 0; i < directUrl.length; i++) {
+          const code = directUrl.charCodeAt(i) ^ 137;
+          hex += code.toString(16).padStart(2, "0");
+        }
+        finalUrl = `https://crs.24stream.xyz/media/${hex}?origin=https%3A%2F%2Fmegaplay.buzz`;
       }
-      const proxiedUrl = `https://crs.24stream.xyz/media/${hex}&origin=https%3A%2F%2Fmegaplay.buzz`;
       
       const result = {
-        directUrl: proxiedUrl,
+        directUrl: finalUrl,
         type: "hls"
       };
       
@@ -1652,4 +1939,191 @@ export async function extractAnidapStream(embedUrl) {
       return null;
     }
   });
+}
+
+// --- ToonStream Scraper ---
+
+export async function searchToonStream(keyword) {
+  const reqKey = `search_toonstream:${keyword}`;
+  return deduplicateRequest(reqKey, () => searchToonStreamUncached(keyword));
+}
+
+async function searchToonStreamUncached(keyword) {
+  try {
+    const url = `https://toonstream.vip/?s=${encodeURIComponent(keyword)}`;
+    console.log(`[ToonStream] Searching: ${url}`);
+    
+    const res = await fetch(url, {
+      headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36" }
+    });
+    
+    if (!res.ok) {
+      console.warn(`[ToonStream] Search fetch failed with status: ${res.status}`);
+      return [];
+    }
+    const html = await res.text();
+    const $ = cheerio.load(html);
+    
+    const results = [];
+    $("article, .result-item, .search-result").each((i, element) => {
+      const aTag = $(element).find("a").first();
+      const href = aTag.attr("href");
+      
+      if (href && (href.includes("/series/") || href.includes("/movies/"))) {
+        const title = $(element).find(".entry-title, .title, h3, h2").text().trim() || aTag.attr("title") || aTag.text().trim();
+        const slug = href.replace("https://toonstream.vip/", "").replace(/\/$/, "");
+        results.push({ title, slug });
+      }
+    });
+    
+    console.log(`[ToonStream] Found ${results.length} search results`);
+    return results;
+  } catch (error) {
+    console.warn("[ToonStream] Error in searchToonStream:", error.message || error);
+    return [];
+  }
+}
+
+export async function findToonStreamSlug(aniListTitleRomaji, aniListTitleEnglish, format = "", seasonYear = null) {
+  if (!aniListTitleEnglish && aniListTitleRomaji) {
+    const fallbackEnglish = getDoraemonEnglishTitle(aniListTitleRomaji);
+    if (fallbackEnglish) {
+      aniListTitleEnglish = fallbackEnglish;
+    }
+  }
+  const cacheKey = getCacheKey("toon_slug", `${aniListTitleRomaji}_${aniListTitleEnglish}`);
+  const cached = await getCache(cacheKey, LONG_CACHE_TTL);
+  if (cached) return cached;
+  
+  return deduplicateRequest(cacheKey, async () => {
+    const doubleCheck = await getCache(cacheKey, LONG_CACHE_TTL);
+    if (doubleCheck) return doubleCheck;
+    
+    const result = await findToonStreamSlugUncached(aniListTitleRomaji, aniListTitleEnglish, format, seasonYear);
+    if (result) {
+      await setCache(cacheKey, result, LONG_CACHE_TTL);
+    }
+    return result;
+  });
+}
+
+async function findToonStreamSlugUncached(aniListTitleRomaji, aniListTitleEnglish, format = "", seasonYear = null) {
+  const searchQueries = getSearchQueries(aniListTitleRomaji, aniListTitleEnglish);
+  
+  for (const query of searchQueries) {
+    const results = await searchToonStream(query);
+    if (results.length > 0) {
+      let bestMatch = null;
+      let highestScore = 0;
+      
+      for (const result of results) {
+        // Strict Title & Year Verification
+        if (!verifyTitleMatchForAny(aniListTitleRomaji, aniListTitleEnglish, result.title, seasonYear)) {
+          continue;
+        }
+        
+        const scoreRomaji = computeSimilarity(result.title, aniListTitleRomaji);
+        const scoreEnglish = aniListTitleEnglish ? computeSimilarity(result.title, aniListTitleEnglish) : 0;
+        let score = Math.max(scoreRomaji, scoreEnglish);
+        
+        const lowerTitle = result.title.toLowerCase();
+        const isMovie = format === "MOVIE";
+        const titleHasMovie = lowerTitle.includes("movie") || lowerTitle.includes("film") || result.slug.includes("movies/");
+        
+        if (isMovie) {
+          if (titleHasMovie) score += 0.15;
+        } else {
+          if (titleHasMovie) score -= 0.3;
+        }
+        
+        if (score > highestScore && score > 0.35) {
+          highestScore = score;
+          bestMatch = result.slug;
+        }
+      }
+      
+      if (bestMatch) {
+        console.log(`[ToonStream] Mapped to slug: ${bestMatch}`);
+        return bestMatch;
+      }
+    }
+  }
+  return null;
+}
+
+export async function getToonStreamEpisodes(slug) {
+  const cacheKey = getCacheKey("toon_eps", slug);
+  const cached = await getCache(cacheKey);
+  if (cached) return cached;
+  
+  return deduplicateRequest(cacheKey, async () => {
+    const doubleCheck = await getCache(cacheKey);
+    if (doubleCheck) return doubleCheck;
+    
+    const result = await getToonStreamEpisodesUncached(slug);
+    if (result && result.length > 0) {
+      await setCache(cacheKey, result);
+    }
+    return result;
+  });
+}
+
+async function getToonStreamEpisodesUncached(slug) {
+  try {
+    const url = `https://toonstream.vip/${slug}/`;
+    console.log(`[ToonStream] Fetching episodes from: ${url}`);
+    
+    const res = await fetch(url, {
+      headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36" }
+    });
+    
+    if (!res.ok) {
+      console.warn(`[ToonStream] Episodes fetch failed with status ${res.status} for slug: ${slug}`);
+      return [];
+    }
+    const html = await res.text();
+    const $ = cheerio.load(html);
+    
+    const episodes = [];
+    
+    if (slug.startsWith("movies/")) {
+      episodes.push({
+        number: 1,
+        title: "Movie / OVA",
+        slug: `toonstream-${slug}`
+      });
+    } else {
+      $("a").each((i, el) => {
+        const href = $(el).attr('href') || '';
+        if (href.includes('/episode/')) {
+          const path = href.replace('https://toonstream.vip/', '').replace(/\/$/, '');
+          const numMatch = path.match(/[-_](\d+)x(\d+(\.\d+)?)$/i);
+          if (numMatch) {
+            const num = parseFloat(numMatch[2]);
+            episodes.push({
+              number: num,
+              title: `Episode ${num}`,
+              slug: `toonstream-${path}`
+            });
+          }
+        }
+      });
+    }
+    
+    const seen = new Set();
+    const uniqueEpisodes = [];
+    for (const ep of episodes) {
+      if (!seen.has(ep.slug)) {
+        seen.add(ep.slug);
+        uniqueEpisodes.push(ep);
+      }
+    }
+    
+    const sorted = uniqueEpisodes.sort((a, b) => a.number - b.number);
+    console.log(`[ToonStream] Parsed ${sorted.length} episodes`);
+    return sorted;
+  } catch (error) {
+    console.warn("[ToonStream] Error in getToonStreamEpisodes:", error.message || error);
+    return [];
+  }
 }

@@ -73,6 +73,12 @@ export async function GET(request) {
 
     // 3. Get episodes list for a known slug
     if (slug) {
+      if (slug.startsWith("toonstream-")) {
+        const { getToonStreamEpisodes } = await import("@/lib/scraper");
+        const realSlug = slug.replace("toonstream-", "");
+        const episodes = await getToonStreamEpisodes(realSlug);
+        return NextResponse.json({ episodes }, { headers: cacheHeaders });
+      }
       if (slug.startsWith("rareanimes-")) {
         const { getRareAnimesEpisodes } = await import("@/lib/scraper");
         const realSlug = slug.replace("rareanimes-", "").replace(/__/g, "/");
@@ -92,9 +98,11 @@ export async function GET(request) {
     // 4. Match AniList titles to Gogoanime/RareAnimes and return slug + episodes
     if (titleRomaji || titleEnglish) {
       const provider = searchParams.get("provider");
+      const seasonYearVal = searchParams.get("seasonYear") ? parseInt(searchParams.get("seasonYear"), 10) : null;
+      
       if (provider === "rareanimes") {
         const { findRareAnimesSlug, getRareAnimesEpisodes } = await import("@/lib/scraper");
-        const foundSlug = await findRareAnimesSlug(titleRomaji, titleEnglish, format);
+        const foundSlug = await findRareAnimesSlug(titleRomaji, titleEnglish, format, seasonYearVal);
         if (!foundSlug) {
           return NextResponse.json({ error: "Anime not found on provider" }, { status: 404 });
         }
@@ -103,7 +111,7 @@ export async function GET(request) {
         return NextResponse.json({ slug: `rareanimes-${safeSlug}`, episodes }, { headers: cacheHeaders });
       }
 
-      const foundSlug = await findGogoAnimeSlug(titleRomaji, titleEnglish, format);
+      const foundSlug = await findGogoAnimeSlug(titleRomaji, titleEnglish, format, false, seasonYearVal);
       if (!foundSlug) {
         return NextResponse.json({ error: "Anime not found on provider" }, { status: 404 });
       }

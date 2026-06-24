@@ -1,6 +1,7 @@
 import fs from "fs";
 import path from "path";
 import * as cheerio from "cheerio";
+import { connection } from "next/server";
 
 // Popular show title normalized to animefillerlist.com slug mapping
 const SLUG_MAP = {
@@ -57,6 +58,8 @@ export function getFillerSlug(romaji, english) {
 
 export async function fetchFillerList(slug) {
   if (!slug) return {};
+
+  await connection();
 
   const cacheDir = path.join(process.cwd(), "cache", "filler");
   const cacheFile = path.join(cacheDir, `${slug}.json`);

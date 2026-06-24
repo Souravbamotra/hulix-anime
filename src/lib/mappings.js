@@ -8,7 +8,8 @@ export const COMBINE_SEASONS_WHITELIST = [
   "detective conan",
   "pokemon",
   "fairy tail",
-  "doraemon"
+  "doraemon",
+  "dragon ball"
 ];
 
 /**
@@ -20,6 +21,11 @@ export const RAREANIMES_SEASON_OFFSETS = {
     1: 1,
     20: 892,
     22: 1089
+  },
+  "dragon ball": {
+    1: 1,
+    3: 58,
+    4: 75
   }
 };
 
@@ -118,6 +124,14 @@ export function getGogoAnimeOverride(titleRomaji, titleEnglish, isDub) {
     return isDub ? "anime/one-piece-dub" : "anime/one-piece";
   }
   
+  const isDemonSlayerS1 = 
+    cleanTitleRomaji === "kimetsu no yaiba" || 
+    cleanTitleEnglish === "demon slayer: kimetsu no yaiba";
+    
+  if (isDemonSlayerS1) {
+    return isDub ? "anime/demon-slayer-kimetsu-no-yaiba-dub" : "anime/demon-slayer-kimetsu-no-yaiba";
+  }
+  
   return null;
 }
 
@@ -137,6 +151,11 @@ export function getRareAnimesOverrideBeforeCache(titleRomaji, titleEnglish) {
       return "hindi/wistoria-wand-and-sword-season-2-hindi-dubbed-episodes-download-hd";
     }
     return "hindi/wistoria-wand-and-sword-season-1-hindi-dubbed-episodes-download-hd";
+  }
+
+  // Dragon Ball overrides
+  if (cleanTitleRomaji === "dragon ball" || cleanTitleEnglish === "dragon ball") {
+    return "multi::1||hindi/dragon-ball-1986-hindi-dubbed-episodes-censored-download-hd::3||hindi/dragon-ball-1986-season-03-hindi-dubbed-episodes-download-hd::4||hindi/dragon-ball-1986-season-04-hindi-dubbed-episodes-download-hd";
   }
 
   // Re:Zero overrides
@@ -189,5 +208,17 @@ export function getRareAnimesOverrideAfterCache(titleRomaji, titleEnglish) {
     return "hindi/doraemon-all-season-hindi-episodes-download-hd";
   }
 
+  return null;
+}
+
+/**
+ * Resolves English title fallback for Doraemon movies when English title is null on AniList.
+ */
+export function getDoraemonEnglishTitle(titleRomaji) {
+  if (!titleRomaji) return null;
+  const lower = titleRomaji.toLowerCase();
+  if (lower.includes("midori no kyojin") || lower.includes("green giant") || lower.includes("hara hara planet")) {
+    return "Doraemon: Nobita and the Green Giant Legend";
+  }
   return null;
 }

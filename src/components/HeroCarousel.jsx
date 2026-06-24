@@ -6,6 +6,32 @@ import Image from "next/image";
 
 export default function HeroCarousel({ animeList }) {
   const [activeIndex, setActiveIndex] = useState(0);
+  const [touchStart, setTouchStart] = useState(null);
+  const [touchEnd, setTouchEnd] = useState(null);
+
+  const minSwipeDistance = 50;
+
+  const onTouchStart = (e) => {
+    setTouchEnd(null);
+    setTouchStart(e.targetTouches[0].clientX);
+  };
+
+  const onTouchMove = (e) => {
+    setTouchEnd(e.targetTouches[0].clientX);
+  };
+
+  const onTouchEnd = () => {
+    if (!touchStart || !touchEnd) return;
+    const distance = touchStart - touchEnd;
+    const isLeftSwipe = distance > minSwipeDistance;
+    const isRightSwipe = distance < -minSwipeDistance;
+
+    if (isLeftSwipe) {
+      setActiveIndex((prevIndex) => (prevIndex + 1) % animeList.length);
+    } else if (isRightSwipe) {
+      setActiveIndex((prevIndex) => (prevIndex - 1 + animeList.length) % animeList.length);
+    }
+  };
 
   useEffect(() => {
     if (animeList.length <= 1) return;
@@ -26,7 +52,12 @@ export default function HeroCarousel({ animeList }) {
     : "";
 
   return (
-    <section className="hero-section">
+    <section 
+      className="hero-section"
+      onTouchStart={onTouchStart}
+      onTouchMove={onTouchMove}
+      onTouchEnd={onTouchEnd}
+    >
       {/* Background Banner Layer */}
       <div className="hero-banner-container">
         {animeList.map((anime, idx) => (

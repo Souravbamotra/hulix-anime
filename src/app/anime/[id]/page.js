@@ -5,7 +5,16 @@ import Navbar from "@/components/Navbar";
 import { getAnimeDetails } from "@/lib/anilist";
 import { findGogoAnimeSlug, getAnimeEpisodes, findRareAnimesSlug, getRareAnimesEpisodes, getAnidapEpisodes } from "@/lib/scraper";
 import EpisodesList from "@/components/EpisodesList";
+import AnimeDescription from "@/components/AnimeDescription";
 import { fetchFillerList, getFillerSlug } from "@/lib/filler";
+
+export const unstable_instant = {
+  prefetch: 'runtime',
+  samples: [
+    { params: { id: '21' } }
+  ],
+  unstable_disableValidation: true
+};
 
 export async function generateMetadata({ params }) {
   const { id } = await params;
@@ -44,8 +53,6 @@ export async function generateMetadata({ params }) {
   }
 }
 
-export const revalidate = 1800; // Cache detail pages for 30 minutes
-
 async function EpisodeListSection({ media }) {
   let subEpisodes = [];
   let engDubEpisodes = [];
@@ -54,9 +61,9 @@ async function EpisodeListSection({ media }) {
   try {
     const fillerSlug = getFillerSlug(media.title.romaji, media.title.english);
     const [gogoSubSlug, gogoDubSlug, rareSlug, fillerData] = await Promise.all([
-      findGogoAnimeSlug(media.title.romaji, media.title.english, media.format, false),
-      findGogoAnimeSlug(media.title.romaji, media.title.english, media.format, true),
-      findRareAnimesSlug(media.title.romaji, media.title.english, media.format),
+      findGogoAnimeSlug(media.title.romaji, media.title.english, media.format, false, media.seasonYear),
+      findGogoAnimeSlug(media.title.romaji, media.title.english, media.format, true, media.seasonYear),
+      findRareAnimesSlug(media.title.romaji, media.title.english, media.format, media.seasonYear),
       fillerSlug ? fetchFillerList(fillerSlug) : Promise.resolve({})
     ]);
 
@@ -87,6 +94,10 @@ async function EpisodeListSection({ media }) {
       if (engDubEpisodes.length > media.episodes) {
         console.warn(`[Details Page] Rejecting GogoAnime dub episodes due to mismatch (expected ${media.episodes}, got ${engDubEpisodes.length})`);
         engDubEpisodes = [];
+      }
+      if (hindiDubEpisodes.length > media.episodes) {
+        console.warn(`[Details Page] Rejecting RareAnimes/ToonStream episodes due to mismatch (expected ${media.episodes}, got ${hindiDubEpisodes.length})`);
+        hindiDubEpisodes = [];
       }
     }
 
@@ -139,21 +150,33 @@ function EpisodesSkeleton() {
   );
 }
 
-export default async function AnimeDetails({ params }) {
+function AnimeDetailSkeleton() {
+  return (
+    <div className="main-container detail-main" style={{ marginTop: 80 }}>
+      <div className="detail-grid">
+        <div className="detail-left">
+          <div className="detail-cover-wrapper glass-panel skeleton" style={{ aspectRatio: "11 / 16" }} />
+          <div className="detail-quick-info glass-panel skeleton" style={{ height: 200 }} />
+        </div>
+        <div className="detail-right">
+          <div className="detail-header-panel glass-panel skeleton" style={{ height: 300, padding: 32 }} />
+          <div className="episodes-section glass-panel skeleton" style={{ height: 200 }} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+async function AnimeDetailsContent({ params }) {
   const { id } = await params;
-  
-  // 1. Fetch details from AniList
   const media = await getAnimeDetails(id);
   if (!media) {
     return (
-      <>
-        <Navbar />
-        <div className="main-container error-container">
-          <h2>Anime not found</h2>
-          <p>We couldn&apos;t retrieve the details for this anime.</p>
-          <Link href="/" className="glow-btn">Back to Home</Link>
-        </div>
-      </>
+      <div className="main-container error-container">
+        <h2>Anime not found</h2>
+        <p>We couldn&apos;t retrieve the details for this anime.</p>
+        <Link href="/" className="glow-btn">Back to Home</Link>
+      </div>
     );
   }
 
@@ -165,7 +188,6 @@ export default async function AnimeDetails({ params }) {
   const subTitle = media.title.romaji !== displayTitle ? media.title.romaji : media.title.native;
   const rating = media.averageScore ? (media.averageScore / 10).toFixed(1) : "N/A";
   
-  // Filter out recommendations that don't have mediaRecommendation details
   const recommendations = media.recommendations?.nodes
     ?.map(n => n.mediaRecommendation)
     ?.filter(Boolean)
@@ -173,8 +195,6 @@ export default async function AnimeDetails({ params }) {
 
   return (
     <>
-      <Navbar />
-      
       {/* Banner Section */}
       <div className="detail-banner-container">
         <Image
@@ -262,7 +282,7 @@ export default async function AnimeDetails({ params }) {
                 ))}
               </div>
 
-              <p className="detail-desc">{cleanDescription}</p>
+              <AnimeDescription description={cleanDescription} />
             </div>
 
             {/* Episode List Section loaded async */}
@@ -308,6 +328,17 @@ export default async function AnimeDetails({ params }) {
           </section>
         )}
       </main>
+    </>
+  );
+}
+
+export default function AnimeDetails({ params }) {
+  return (
+    <>
+      <Navbar />
+      <Suspense fallback={<AnimeDetailSkeleton />}>
+        <AnimeDetailsContent params={params} />
+      </Suspense>
     </>
   );
 }

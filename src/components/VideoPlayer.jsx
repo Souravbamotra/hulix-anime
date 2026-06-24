@@ -15,6 +15,7 @@ export default function VideoPlayer({
   thumbnailUrl,
   qualities,
   onEnded,
+  nextEpisodeSlug,
   // Watch history props:
   animeId,
   malId,
@@ -23,7 +24,8 @@ export default function VideoPlayer({
   episodeId,
   episodeNumber,
   episodeTitle,
-  language
+  language,
+  episodeLength
 }) {
   const videoRef = useRef(null);
   const containerRef = useRef(null);
@@ -52,11 +54,15 @@ export default function VideoPlayer({
   const [skipTimes, setSkipTimes]   = useState(null); // { intro?: {start,end}, outro?: {start,end} }
   const [activeSkip, setActiveSkip] = useState(null); // 'intro' | 'outro' | null
   const [prevEpisodeId, setPrevEpisodeId] = useState(episodeId);
+  const hasPrefetchedRef = useRef(false);
+  const [isStopped, setIsStopped] = useState(false);
 
   if (episodeId !== prevEpisodeId) {
     setPrevEpisodeId(episodeId);
     setSkipTimes(null);
     setActiveSkip(null);
+    hasPrefetchedRef.current = false;
+    setIsStopped(false);
   }
 
   // Sync autoNext state with localStorage on mount
@@ -70,24 +76,99 @@ export default function VideoPlayer({
     }
   }, []);
 
-  // Fetch AniSkip timestamps — only for Hindi dub
+  // Stop player on navigation
   useEffect(() => {
-    if (language !== "hindi" || !malId || !episodeNumber) return;
+    const handleNavigationStart = (href) => {
+      if (!href) return;
+      try {
+        const currentUrl = window.location.pathname + window.location.search;
+        const targetUrl = new URL(href, window.location.origin);
+        if (targetUrl.origin === window.location.origin && targetUrl.pathname + targetUrl.search !== currentUrl) {
+          setIsStopped(true);
+        }
+      } catch (err) {
+        if (href.startsWith("/") && href !== window.location.pathname + window.location.search) {
+          setIsStopped(true);
+        }
+      }
+    };
+
+    const handleGlobalClick = (e) => {
+      const anchor = e.target.closest("a");
+      if (!anchor) return;
+
+      const href = anchor.getAttribute("href");
+      const target = anchor.getAttribute("target");
+
+      if (e.metaKey || e.ctrlKey || e.shiftKey || (target && target === "_blank")) {
+        return;
+      }
+
+      if (href) {
+        handleNavigationStart(href);
+      }
+    };
+
+    const handlePopState = () => {
+      setIsStopped(true);
+    };
+
+    document.addEventListener("click", handleGlobalClick, { capture: true });
+    window.addEventListener("popstate", handlePopState);
+
+    return () => {
+      document.removeEventListener("click", handleGlobalClick, { capture: true });
+      window.removeEventListener("popstate", handlePopState);
+    };
+  }, []);
+
+  // Fetch skip timestamps from our backend API proxy (combining Anime-Skip and AniSkip REST)
+  useEffect(() => {
+    if (!animeId && !malId) return;
+    if (!episodeNumber) return;
+    if (skipTimes) return; // Already fetched successfully
+
+    const length = duration > 0 ? Math.round(duration) : (episodeLength || 1440);
+
     fetch(
-      `https://api.aniskip.com/v2/skip-times/${malId}/${episodeNumber}?types[]=op&types[]=ed&episodeLength=0`
+      `/api/skip-times?animeId=${animeId || ""}&malId=${malId || ""}&episodeNumber=${episodeNumber}&episodeLength=${length}`
     )
-      .then((res) => res.json())
-      .then((data) => {
-        if (!data.found || !data.results) return;
-        const times = {};
-        data.results.forEach((r) => {
-          if (r.skipType === "op") times.intro = { start: r.interval.startTime, end: r.interval.endTime };
-          if (r.skipType === "ed") times.outro = { start: r.interval.startTime, end: r.interval.endTime };
-        });
-        setSkipTimes(times);
+      .then((res) => {
+        if (!res.ok) throw new Error("Failed to fetch skip times");
+        return res.json();
       })
-      .catch(() => {});
-  }, [malId, episodeNumber, language]);
+      .then((data) => {
+        if (!data.found) return;
+
+        // Calculate offset if duration and data.episodeLength are available
+        const dbLength = data.episodeLength;
+        const playerLength = duration > 0 ? duration : (episodeLength || 1440);
+        
+        let offset = 0;
+        if (dbLength && playerLength) {
+          offset = playerLength - dbLength;
+        }
+
+        const finalTimes = { ...data };
+        // We only apply the offset if it is within a reasonable range (e.g. between -180s and +180s)
+        // to avoid incorrect adjustments from wild mismatches
+        if (Math.abs(offset) > 2 && Math.abs(offset) < 180) {
+          console.log(`[VideoPlayer] Applying timeline offset of ${offset.toFixed(1)}s (Player: ${playerLength.toFixed(1)}s, DB: ${dbLength.toFixed(1)}s)`);
+          if (finalTimes.intro) {
+            finalTimes.intro.start = Math.max(0, finalTimes.intro.start + offset);
+            finalTimes.intro.end = Math.max(0, finalTimes.intro.end + offset);
+          }
+          if (finalTimes.outro) {
+            finalTimes.outro.start = Math.max(0, finalTimes.outro.start + offset);
+            finalTimes.outro.end = Math.max(0, finalTimes.outro.end + offset);
+          }
+        }
+        setSkipTimes(finalTimes);
+      })
+      .catch((err) => {
+        console.warn("[VideoPlayer] Failed to load skip timestamps:", err.message);
+      });
+  }, [animeId, malId, episodeNumber, language, duration, episodeLength, skipTimes]);
 
   // Reset skip times when episode changes is now handled during render above
 
@@ -209,10 +290,11 @@ export default function VideoPlayer({
 
     if (Hls.isSupported()) {
       const hls = new Hls({
-        maxBufferLength: 60,
-        maxMaxBufferLength: 120,
-        maxBufferSize: 150 * 1024 * 1024, // 150MB buffer capacity for smooth 1080p playback
+        maxBufferLength: 30,
+        maxMaxBufferLength: 60,
+        maxBufferSize: 60 * 1024 * 1024, // 60MB max buffer capacity
         enableWorker: true,
+        lowLatencyMode: true,
       });
       hlsRef.current = hls;
       hls.loadSource(directUrl);
@@ -310,6 +392,15 @@ export default function VideoPlayer({
       if (video.buffered.length > 0) {
         setBuffered(video.buffered.end(video.buffered.length - 1));
       }
+      
+      // If the player is currently seeking, do not check/update skip segments to avoid flicker
+      if (video?.seeking) return;
+      // Prefetch next episode if progress > 85%
+      if (nextEpisodeSlug && video.duration > 0 && (t / video.duration) > 0.85 && !hasPrefetchedRef.current) {
+        hasPrefetchedRef.current = true;
+        console.log(`[VideoPlayer] Prefetching next episode stream data: ${nextEpisodeSlug}`);
+        fetch(`/api/watch?episodeId=${encodeURIComponent(nextEpisodeSlug)}&servers=true`).catch(() => {});
+      }
       // Update active skip button
       if (skipTimes) {
         const { intro, outro } = skipTimes;
@@ -327,6 +418,7 @@ export default function VideoPlayer({
     const handleEnded = () => {
       saveProgress();
       if (autoNextRef.current && onEndedRef.current) {
+        setIsStopped(true);
         onEndedRef.current();
       }
     };
@@ -597,8 +689,8 @@ export default function VideoPlayer({
     return `${m}:${s.toString().padStart(2, "0")}`;
   };
 
-  // --- RENDER: No source ---
-  if (!src && !directUrl) {
+  // --- RENDER: No source or stopped ---
+  if (isStopped || (!src && !directUrl)) {
     return (
       <div className="player-placeholder glass-panel">
         <div className="placeholder-content">
@@ -606,7 +698,7 @@ export default function VideoPlayer({
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" />
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
           </svg>
-          <p>Select an episode to start streaming</p>
+          <p>{isStopped ? "Loading episode..." : "Select an episode to start streaming"}</p>
         </div>
       </div>
     );
@@ -676,7 +768,7 @@ export default function VideoPlayer({
           </div>
         )}
 
-        {/* ── Skip Intro / Skip Outro (Hindi dub only, from AniSkip) ── */}
+        {/* ── Skip Intro / Skip Outro (from AniSkip) ── */}
         {activeSkip === "intro" && skipTimes?.intro && (
           <button
             className="skip-segment-btn"

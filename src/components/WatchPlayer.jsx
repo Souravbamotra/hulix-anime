@@ -15,6 +15,7 @@ export default function WatchPlayer({
   episodeNumber,
   episodeTitle,
   language,
+  episodeLength,
   episodes = [],
   fillerList = {}
 }) {
@@ -68,6 +69,9 @@ export default function WatchPlayer({
     setIsLoading(true);
   }
 
+  const is9anime = episodeSlug && !episodeSlug.startsWith("rareanimes-") && !episodeSlug.startsWith("anidap-") && !episodeSlug.startsWith("toonstream-");
+  const isToonstream = episodeSlug && episodeSlug.startsWith("toonstream-");
+
   // Helper to check if a server's embed can be extracted to a direct stream
   const isServerExtractable = (server) => {
     if (!server) return false;
@@ -100,6 +104,7 @@ export default function WatchPlayer({
 
   // Determine initial server and whether it is extracting
   const initialIsExtracting = useMemo(() => {
+    if (is9anime || isToonstream) return false;
     const list = initialServers || [];
     const grouped = {};
     list.forEach((s) => {
@@ -110,11 +115,11 @@ export default function WatchPlayer({
     const currentSrvs = grouped[initialCategory] || [];
     const defaultServer = currentSrvs[0] || null;
     return defaultServer ? isServerExtractable(defaultServer) : false;
-  }, [initialServers, initialCategory]);
+  }, [initialServers, initialCategory, is9anime, isToonstream]);
 
   const [directStream, setDirectStream] = useState(null);
   const [isExtracting, setIsExtracting] = useState(initialIsExtracting);
-  const [playerMode, setPlayerMode] = useState("auto"); // "auto" = try direct first, "iframe" = force iframe
+  const [playerMode, setPlayerMode] = useState(() => (is9anime || isToonstream) ? "iframe" : "auto"); // "auto" = try direct first, "iframe" = force iframe
 
   // Group servers by category (sub / dub)
   const categories = useMemo(() => {
@@ -136,6 +141,7 @@ export default function WatchPlayer({
 
   const currentServers = categories[activeCategory] || [];
   const currentServer = currentServers[activeServerIndex] || currentServers[0] || null;
+  const isAnidap = currentServer?.name === "AniDap" || (episodeSlug && episodeSlug.startsWith("anidap-"));
 
   const [prevCurrentServer, setPrevCurrentServer] = useState(currentServer);
   const [prevPlayerMode, setPrevPlayerMode] = useState(playerMode);
@@ -176,6 +182,15 @@ export default function WatchPlayer({
     }
   };
 
+  // Reset playerMode depending on the server type
+  useEffect(() => {
+    if (is9anime || isToonstream) {
+      setPlayerMode("iframe");
+    } else {
+      setPlayerMode("auto");
+    }
+  }, [is9anime, isToonstream]);
+
   // Fetch servers dynamically if not provided at build time
   useEffect(() => {
     if (servers.length === 0 && episodeSlug) {
@@ -208,11 +223,19 @@ export default function WatchPlayer({
           setDirectStream(data);
         } else {
           setDirectStream(null);
+          if (isAnidap) {
+            setPlayerMode("iframe");
+          }
         }
       })
-      .catch(() => setDirectStream(null))
+      .catch(() => {
+        setDirectStream(null);
+        if (isAnidap) {
+          setPlayerMode("iframe");
+        }
+      })
       .finally(() => setIsExtracting(false));
-  }, [currentServer, playerMode]);
+  }, [currentServer, playerMode, isAnidap]);
 
   if (isLoading) {
     return (
@@ -246,13 +269,22 @@ export default function WatchPlayer({
             <p>Extracting stream...</p>
           </div>
         </div>
+      ) : isAnidap && playerMode !== "iframe" && !directStream ? (
+        <div className="player-error glass-panel">
+          <svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.5" className="error-icon">
+            <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+          </svg>
+          <p>Failed to extract stream for AniDap. Custom player stream is unavailable.</p>
+        </div>
       ) : directStream && playerMode !== "iframe" ? (
         <VideoPlayer
+          key={directStream.directUrl}
           directUrl={directStream.directUrl}
           qualities={directStream.qualities}
           type={directStream.type}
           thumbnailUrl={directStream.thumbnailUrl}
           onEnded={handleEpisodeEnded}
+          nextEpisodeSlug={nextEpisodeSlug}
           animeId={animeId}
           malId={malId}
           animeTitle={animeTitle}
@@ -261,12 +293,15 @@ export default function WatchPlayer({
           episodeNumber={episodeNumber}
           episodeTitle={episodeTitle}
           language={language || activeCategory}
+          episodeLength={episodeLength}
         />
       ) : (
         <VideoPlayer
+          key={currentServer.iframeUrl}
           src={currentServer.iframeUrl}
           type={currentServer.sourceType}
           onEnded={handleEpisodeEnded}
+          nextEpisodeSlug={nextEpisodeSlug}
           animeId={animeId}
           malId={malId}
           animeTitle={animeTitle}
@@ -275,6 +310,7 @@ export default function WatchPlayer({
           episodeNumber={episodeNumber}
           episodeTitle={episodeTitle}
           language={language || activeCategory}
+          episodeLength={episodeLength}
         />
       )}
 
@@ -313,28 +349,30 @@ export default function WatchPlayer({
         )}
 
         {/* Player Mode Toggle */}
-        <div className="player-mode-toggle">
-          <button
-            className={`mode-btn ${playerMode !== "iframe" ? "active" : ""}`}
-            onClick={() => handlePlayerModeChange("auto")}
-            title="Custom Player — Ad-free with native controls"
-          >
-            <svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14">
-              <path d="M21 3H3c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h18c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 16H3V5h18v14zM9.5 7.5v9l7-4.5z"/>
-            </svg>
-            Custom Player
-          </button>
-          <button
-            className={`mode-btn ${playerMode === "iframe" ? "active" : ""}`}
-            onClick={() => handlePlayerModeChange("iframe")}
-            title="Embedded Player — Original third-party player"
-          >
-            <svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14">
-              <path d="M19 4H5a2 2 0 00-2 2v12a2 2 0 002 2h14a2 2 0 002-2V6a2 2 0 00-2-2zm0 14H5V8h14v10z"/>
-            </svg>
-            Embed Player
-          </button>
-        </div>
+        {!is9anime && !isToonstream && (
+          <div className="player-mode-toggle">
+            <button
+              className={`mode-btn ${playerMode !== "iframe" ? "active" : ""}`}
+              onClick={() => handlePlayerModeChange("auto")}
+              title="Custom Player — Ad-free with native controls"
+            >
+              <svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14">
+                <path d="M21 3H3c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h18c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 16H3V5h18v14zM9.5 7.5v9l7-4.5z"/>
+              </svg>
+              Custom Player
+            </button>
+            <button
+              className={`mode-btn ${playerMode === "iframe" ? "active" : ""}`}
+              onClick={() => handlePlayerModeChange("iframe")}
+              title="Embedded Player — Original third-party player"
+            >
+              <svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14">
+                <path d="M19 4H5a2 2 0 00-2 2v12a2 2 0 002 2h14a2 2 0 002-2V6a2 2 0 00-2-2zm0 14H5V8h14v10z"/>
+              </svg>
+              Embed Player
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );

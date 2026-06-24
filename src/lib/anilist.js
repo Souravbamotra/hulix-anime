@@ -1,3 +1,5 @@
+'use cache';
+
 const ANILIST_URL = "https://graphql.anilist.co";
 
 // ─── Request Deduplication ──────────────────────────────────────────────────
@@ -306,4 +308,25 @@ export async function getSearchSuggestions(keyword) {
   const data = await fetchFromAniList(query, { search: keyword });
   return data?.Page?.media || [];
 }
+
+export async function getExactSearchCount(keyword) {
+  if (!keyword || !keyword.trim()) return 0;
+  const query = `
+    query ($search: String) {
+      Page(page: 1, perPage: 100) {
+        media(search: $search, type: ANIME) {
+          id
+        }
+      }
+    }
+  `;
+  try {
+    const data = await fetchFromAniList(query, { search: keyword });
+    return data?.Page?.media?.length || 0;
+  } catch (error) {
+    console.error("Error fetching exact search count:", error);
+    return 0;
+  }
+}
+
 

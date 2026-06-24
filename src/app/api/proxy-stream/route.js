@@ -1,3 +1,45 @@
+/**
+ * Allowlist of hostnames (and their subdomains) that this proxy is permitted
+ * to fetch on behalf of the client.  Any URL whose hostname does not match
+ * one of these entries is rejected with 403 before a network request is made.
+ *
+ * Keep this list as narrow as possible — only add a host when you have a
+ * concrete need for it.
+ */
+const ALLOWED_HOSTS = new Set([
+  // HLS / TS segment CDNs
+  "ibyteimg.com",
+  "tiktokv.com",
+  // AniDap / argon embed CDN
+  "argon.razorshell.space",
+  "razorshell.space",
+  "anidap.se",
+  // 24stream / megaplay / vibeplayer embeds
+  "24stream.xyz",
+  "megaplay.su",
+  "vibeplayer.site",
+  // codedew / streambeta / multiquality
+  "codedew.com",
+  "streambeta.net",
+  "multiquality.net",
+  // gogoanimes CDN
+  "gogoanimes.cv",
+]);
+
+/**
+ * Returns true when `hostname` (or any sub-domain of it) is in ALLOWED_HOSTS.
+ * e.g. "cdn.24stream.xyz" is accepted because "24stream.xyz" is in the set.
+ */
+function isAllowedHost(hostname) {
+  if (ALLOWED_HOSTS.has(hostname)) return true;
+  // Walk up sub-domain levels: "a.b.c" → check "b.c" → check "c"
+  const parts = hostname.split(".");
+  for (let i = 1; i < parts.length - 1; i++) {
+    if (ALLOWED_HOSTS.has(parts.slice(i).join("."))) return true;
+  }
+  return false;
+}
+
 export async function GET(request) {
   const { searchParams } = new URL(request.url);
   const url = searchParams.get("url");
@@ -6,12 +48,43 @@ export async function GET(request) {
     return new Response("Missing url parameter", { status: 400 });
   }
 
+  // --- Security: reject URLs not belonging to known anime sources ---
+  let parsedUrl;
+  try {
+    parsedUrl = new URL(url);
+  } catch {
+    return new Response("Invalid url parameter", { status: 400 });
+  }
+
+  // Only allow http(s) — block file://, data://, etc.
+  if (parsedUrl.protocol !== "http:" && parsedUrl.protocol !== "https:") {
+    return new Response("Forbidden", { status: 403 });
+  }
+
+  if (!isAllowedHost(parsedUrl.hostname)) {
+    return new Response("Forbidden", { status: 403 });
+  }
+  // ------------------------------------------------------------------
+
   try {
     const range = request.headers.get("range") || request.headers.get("Range");
+    
+    let referer = "https://argon.razorshell.space/";
+    let originHeader = undefined;
+
+    if (url.includes("24stream.xyz") || url.includes("megaplay") || url.includes("vibeplayer.site")) {
+      referer = "https://anidap.se/";
+      originHeader = "https://anidap.se";
+    }
+
     const headers = {
       "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36",
-      "Referer": "https://argon.razorshell.space/"
+      "Referer": referer
     };
+
+    if (originHeader) {
+      headers["Origin"] = originHeader;
+    }
     
     if (range) {
       headers["Range"] = range;
@@ -77,6 +150,11 @@ export async function GET(request) {
           } catch (e) {
             return trimmed;
           }
+        }
+
+        // Optimization: Do not proxy absolute segment URLs that natively support CORS (like ByteDance/TikTok CDN)
+        if (absUrl.includes("ibyteimg.com")) {
+          return absUrl;
         }
 
         // Rewrite to go through our proxy

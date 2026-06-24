@@ -1,12 +1,21 @@
 import Link from "next/link";
 import Image from "next/image";
 
-export default function AnimeCard({ id, title, coverImage, averageScore, format, episodes }) {
+export default function AnimeCard({ id, title, coverImage, averageScore, format, episodes, description, genres }) {
   const displayTitle = title.english || title.romaji;
   
   // Format rating out of 10
   const rating = averageScore ? (averageScore / 10).toFixed(1) : null;
   
+  const cleanDesc = description
+    ? description
+        .replace(/<[^>]*>/g, "")
+        .replace(/\s+/g, " ")
+        .trim()
+    : "No description available.";
+    
+  const displayedGenres = genres ? genres.slice(0, 3) : [];
+
   return (
     <Link href={`/anime/${id}`} className="anime-card-link">
       <div className="glass-card anime-card">
@@ -29,6 +38,22 @@ export default function AnimeCard({ id, title, coverImage, averageScore, format,
           
           <div className="card-format-badge">
             {format || "TV"}
+          </div>
+
+          {/* Hover reveal overlay */}
+          <div className="card-hover-overlay">
+            <div className="hover-genres">
+              {displayedGenres.map(g => (
+                <span key={g} className="hover-genre-tag">{g}</span>
+              ))}
+            </div>
+            <p className="hover-desc">{cleanDesc}</p>
+            <div className="hover-action-text">
+              <span>Watch Now</span>
+              <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" fill="currentColor" viewBox="0 0 24 24" className="play-icon-mini">
+                <path d="M8 5v14l11-7z"/>
+              </svg>
+            </div>
           </div>
         </div>
         
