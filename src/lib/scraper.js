@@ -539,7 +539,7 @@ async function getEpisodeServersUncached(episodeSlug) {
     }
 
     if (episodeSlug.startsWith("toonstream-")) {
-      const pagePath = episodeSlug.replace("toonstream-", "");
+      const pagePath = episodeSlug.replace("toonstream-", "").replace(/__/g, "/");
       const url = `https://toonstream.vip/${pagePath}/`;
       console.log(`[ToonStream] Fetching servers from: ${url}`);
       
@@ -2058,7 +2058,7 @@ async function findToonStreamSlugUncached(aniListTitleRomaji, aniListTitleEnglis
 }
 
 export async function getToonStreamEpisodes(slug) {
-  const cacheKey = getCacheKey("toon_eps3", slug);
+  const cacheKey = getCacheKey("toon_eps4", slug);
   const cached = await getCache(cacheKey);
   if (cached) return cached;
   
@@ -2120,7 +2120,7 @@ async function getToonStreamEpisodesUncached(slug) {
             number: ep,
             season,
             title: `Episode ${ep}`,
-            slug: `toonstream-${path}`
+            slug: `toonstream-${path.replace(/\//g, '__')}`
           });
         }
       });

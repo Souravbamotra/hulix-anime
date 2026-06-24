@@ -75,7 +75,7 @@ export async function GET(request) {
     if (slug) {
       if (slug.startsWith("toonstream-")) {
         const { getToonStreamEpisodes } = await import("@/lib/scraper");
-        const realSlug = slug.replace("toonstream-", "");
+        const realSlug = slug.replace("toonstream-", "").replace(/__/g, "/");
         const episodes = await getToonStreamEpisodes(realSlug);
         return NextResponse.json({ episodes }, { headers: cacheHeaders });
       }
