@@ -164,18 +164,42 @@ export default function VideoPlayer({
         const targetUrl = new URL(href, window.location.origin);
         if (
           targetUrl.origin === window.location.origin &&
-          targetUrl.pathname + targetUrl.search !== currentUrl &&
-          !targetUrl.pathname.startsWith("/watch/")
+          targetUrl.pathname + targetUrl.search !== currentUrl
         ) {
-          setIsStopped(true);
+          if (!targetUrl.pathname.startsWith("/watch/")) {
+            // Navigating away from watch entirely
+            setIsStopped(true);
+          }
+          // For ALL internal navigations to a different URL (including
+          // watch-to-watch), immediately kill the current iframe to prevent
+          // the previous episode's audio from lingering during the React
+          // transition. This direct DOM mutation is safe here because the
+          // component will be destroyed by key-based remount.
+          try {
+            const iframe = iframeRef.current;
+            if (iframe) iframe.src = "about:blank";
+          } catch (_) {}
+          try {
+            const video = videoRef.current;
+            if (video) { video.pause(); }
+          } catch (_) {}
         }
       } catch (err) {
         if (
           href.startsWith("/") &&
-          href !== window.location.pathname + window.location.search &&
-          !href.startsWith("/watch/")
+          href !== window.location.pathname + window.location.search
         ) {
-          setIsStopped(true);
+          if (!href.startsWith("/watch/")) {
+            setIsStopped(true);
+          }
+          try {
+            const iframe = iframeRef.current;
+            if (iframe) iframe.src = "about:blank";
+          } catch (_) {}
+          try {
+            const video = videoRef.current;
+            if (video) { video.pause(); }
+          } catch (_) {}
         }
       }
     };
