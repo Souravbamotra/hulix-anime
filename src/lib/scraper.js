@@ -328,6 +328,7 @@ async function findGogoAnimeSlugUncached(aniListTitleRomaji, aniListTitleEnglish
 
 
 export async function getAnimeEpisodes(slug) {
+  if (!slug || slug === "no_slug" || slug === "none") return [];
   const cacheKey = getCacheKey("gogo_eps", slug);
   const cached = await getCache(cacheKey);
   if (cached) return cached;

@@ -123,6 +123,21 @@ export function getGogoAnimeOverride(titleRomaji, titleEnglish, isDub) {
   if (cleanTitleRomaji === "one piece" || cleanTitleEnglish === "one piece") {
     return isDub ? "anime/one-piece-dub" : "anime/one-piece";
   }
+
+  // Wistoria: Wand and Sword overrides
+  const isWistoria = 
+    cleanTitleRomaji.includes("wistoria") || 
+    cleanTitleEnglish.includes("wistoria") ||
+    cleanTitleRomaji.includes("tsue to tsurugi no") || 
+    cleanTitleEnglish.includes("wand and sword");
+
+  if (isWistoria) {
+    const seasonNum = getAniListSeasonNum(titleRomaji) || getAniListSeasonNum(titleEnglish) || 1;
+    if (seasonNum === 2) {
+      return isDub ? "no_slug" : "anime/wistoria-wand-and-sword-season-2";
+    }
+    return isDub ? "anime/wistoria-wand-and-sword-dub" : "anime/wistoria-wand-and-sword";
+  }
   
   const isDemonSlayerS1 = 
     cleanTitleRomaji === "kimetsu no yaiba" || 
