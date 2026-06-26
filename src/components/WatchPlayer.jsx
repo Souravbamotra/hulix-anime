@@ -185,11 +185,14 @@ export default function WatchPlayer({
     if (is9anime || isToonstream) {
       // eslint-disable-next-line react-hooks/set-state-in-effect
       setPlayerMode("iframe");
+    } else if (isAnidap) {
+      // Always default to auto (custom player) for AniDap
+      setPlayerMode("auto");
     } else {
       const saved = localStorage.getItem("hulix-player-mode") || "auto";
       setPlayerMode(saved);
     }
-  }, [is9anime, isToonstream]);
+  }, [is9anime, isToonstream, isAnidap]);
 
   // Fetch servers dynamically if not provided at build time (SSR cache miss)
   useEffect(() => {

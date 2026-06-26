@@ -34,6 +34,10 @@ const ALLOWED_EMBED_HOSTS = new Set([
   "toonstream.vip",
   "ibyteimg.com",
   "tiktokv.com",
+  "vivibebe.site",
+  "streamzone1.site",
+  "lostproject.club",
+  "anizara.store",
 ]);
 
 function isAllowedEmbedHost(hostname) {

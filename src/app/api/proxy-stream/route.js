@@ -10,6 +10,10 @@ const ALLOWED_HOSTS = new Set([
   // HLS / TS segment CDNs
   "ibyteimg.com",
   "tiktokv.com",
+  "vivibebe.site",
+  "streamzone1.site",
+  "lostproject.club",
+  "anizara.store",
   // AniDap / argon embed CDN
   "argon.razorshell.space",
   "razorshell.space",
@@ -107,6 +111,14 @@ export async function GET(request) {
     } else if (url.includes("megaplay") || url.includes("vibeplayer.site")) {
       referer = "https://anidap.se/";
       originHeader = "https://anidap.se";
+    } else if (
+      url.includes("streamzone1.site") ||
+      url.includes("lostproject.club") ||
+      url.includes("anizara.store") ||
+      url.includes("vivibebe.site")
+    ) {
+      referer = "https://megaplay.buzz/";
+      originHeader = "https://megaplay.buzz";
     }
 
     const headers = {
