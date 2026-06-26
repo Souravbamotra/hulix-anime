@@ -35,7 +35,11 @@ export default function VideoPlayer({
   const progressTimerRef = useRef(null);
   const iframeRef = useRef(null);
 
-  // Hard-stop video on unmount (iframe cleanup is handled by React via key-based remount)
+  // Hard-stop video/audio on unmount — prevents previous episode audio
+  // lingering in the background after navigating to a new episode.
+  // Note: setting iframe.src on unmount is safe (component is destroyed,
+  // no future re-render will conflict). The isStopped effect intentionally
+  // does NOT mutate iframe.src to avoid React reconciliation mismatches.
   useEffect(() => {
     const video = videoRef.current;
     return () => {
@@ -47,6 +51,16 @@ export default function VideoPlayer({
         }
       } catch (e) {
         console.warn("Failed to clean up video element:", e);
+      }
+      try {
+        // iframeRef.current may already be null if React unmounted the
+        // keyed iframe first, so we read the ref at cleanup time.
+        const iframe = iframeRef.current;
+        if (iframe) {
+          iframe.src = "about:blank";
+        }
+      } catch (e) {
+        console.warn("Failed to clean up iframe element:", e);
       }
     };
   }, []);
