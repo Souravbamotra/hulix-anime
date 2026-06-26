@@ -1840,7 +1840,11 @@ export async function getAnidapEpisodes(anilistId, isDub = false, aniListEpisode
                 if (hasId) {
                   for (const val of Object.values(resolved)) {
                     if (typeof val === 'number' && val > 0 && val < 3000) {
-                      if (val > count) count = val;
+                      // Skip release years (1950 - 2050) to avoid parsing them as episode counts
+                      const isYear = val >= 1950 && val <= 2050;
+                      if (!isYear && val > count) {
+                        count = val;
+                      }
                     }
                   }
                 }

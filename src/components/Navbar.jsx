@@ -1,9 +1,32 @@
 "use client";
 
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, Suspense } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { useRouter, usePathname } from "next/navigation";
 import Image from "next/image";
+
+function PathnameTrackerInner() {
+  const pathname = usePathname();
+
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      if (window.currentPathname && window.currentPathname !== pathname) {
+        window.prevPathname = window.currentPathname;
+      }
+      window.currentPathname = pathname;
+    }
+  }, [pathname]);
+
+  return null;
+}
+
+function PathnameTracker() {
+  return (
+    <Suspense fallback={null}>
+      <PathnameTrackerInner />
+    </Suspense>
+  );
+}
 
 export default function Navbar() {
   const [query, setQuery] = useState("");
@@ -43,6 +66,7 @@ export default function Navbar() {
   // ── Debounced suggestions fetch ────────────────────────────────────────
   useEffect(() => {
     if (query.trim().length < 3) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setSuggestions([]);
       setIsOpen(false);
       setActiveIndex(-1);
@@ -68,6 +92,15 @@ export default function Navbar() {
 
     return () => clearTimeout(timer);
   }, [query]);
+
+  // ── Shared close-and-clear helper ────────────────────────────────────
+  const closeAndNavigate = useCallback((href) => {
+    setIsOpen(false);
+    setActiveIndex(-1);
+    setQuery("");
+    setMobileMenuOpen(false);
+    router.push(href);
+  }, [router]);
 
   // ── Keyboard navigation ────────────────────────────────────────────────
   const handleKeyDown = useCallback(
@@ -107,17 +140,8 @@ export default function Navbar() {
         inputRef.current?.blur();
       }
     },
-    [isOpen, suggestions, activeIndex]
+    [isOpen, suggestions, activeIndex, closeAndNavigate]
   );
-
-  // ── Shared close-and-clear helper ────────────────────────────────────
-  const closeAndNavigate = (href) => {
-    setIsOpen(false);
-    setActiveIndex(-1);
-    setQuery("");
-    setMobileMenuOpen(false);
-    router.push(href);
-  };
 
   const handleSearchSubmit = (e) => {
     e.preventDefault();
@@ -138,6 +162,7 @@ export default function Navbar() {
 
   return (
     <header className="navbar-header" ref={headerRef}>
+      <PathnameTracker />
       <div className="navbar-container">
         <Link href="/" className="logo-link" onClick={() => setMobileMenuOpen(false)}>
           <span className="logo-highlight">Hulix</span>

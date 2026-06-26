@@ -224,6 +224,7 @@ export default function EpisodesList({
   if (activeTab !== prevActiveTab) {
     setPrevActiveTab(activeTab);
     setActiveRangeIndex(initialRangeIndex);
+    setSearchQuery(""); // Clear search when switching tabs so stale queries don't bleed across
   }
 
   const displayedEpisodes = useMemo(() => {

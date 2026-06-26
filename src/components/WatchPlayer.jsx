@@ -61,13 +61,6 @@ export default function WatchPlayer({
     }
   };
   const [servers, setServers] = useState(initialServers || []);
-  const [prevEpisodeSlug, setPrevEpisodeSlug] = useState(episodeSlug);
-
-  if (episodeSlug !== prevEpisodeSlug) {
-    setPrevEpisodeSlug(episodeSlug);
-    setServers([]);
-    setIsLoading(true);
-  }
 
   const is9anime = episodeSlug && !episodeSlug.startsWith("rareanimes-") && !episodeSlug.startsWith("anidap-") && !episodeSlug.startsWith("toonstream-");
   const isToonstream = episodeSlug && episodeSlug.startsWith("toonstream-");
@@ -119,7 +112,9 @@ export default function WatchPlayer({
 
   const [directStream, setDirectStream] = useState(null);
   const [isExtracting, setIsExtracting] = useState(initialIsExtracting);
-  const [playerMode, setPlayerMode] = useState(() => (is9anime || isToonstream) ? "iframe" : "auto"); // "auto" = try direct first, "iframe" = force iframe
+  const [playerMode, setPlayerMode] = useState(is9anime || isToonstream ? "iframe" : "auto"); // "auto" = try direct first, "iframe" = force iframe
+
+
 
   // Group servers by category (sub / dub)
   const categories = useMemo(() => {
@@ -174,6 +169,9 @@ export default function WatchPlayer({
 
   const handlePlayerModeChange = (mode) => {
     setPlayerMode(mode);
+    if (typeof window !== "undefined") {
+      localStorage.setItem("hulix-player-mode", mode);
+    }
     setDirectStream(null);
     if (mode === "auto") {
       setIsExtracting(isServerExtractable(currentServer));
@@ -185,26 +183,38 @@ export default function WatchPlayer({
   // Reset playerMode depending on the server type
   useEffect(() => {
     if (is9anime || isToonstream) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setPlayerMode("iframe");
     } else {
-      setPlayerMode("auto");
+      const saved = localStorage.getItem("hulix-player-mode") || "auto";
+      setPlayerMode(saved);
     }
   }, [is9anime, isToonstream]);
 
-  // Fetch servers dynamically if not provided at build time
+  // Fetch servers dynamically if not provided at build time (SSR cache miss)
   useEffect(() => {
-    if (servers.length === 0 && episodeSlug) {
-      fetch(`/api/watch?episodeId=${encodeURIComponent(episodeSlug)}&servers=true`)
-        .then((res) => res.json())
-        .then((data) => {
-          if (data.servers && data.servers.length > 0) {
-            setServers(data.servers);
-          }
-        })
-        .catch((err) => console.error("Failed to fetch servers:", err))
-        .finally(() => setIsLoading(false));
-    }
-  }, [episodeSlug, servers.length]);
+    if ((initialServers && initialServers.length > 0) || !episodeSlug) return;
+    if (servers.length > 0) return;
+
+    let cancelled = false;
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setIsLoading(true);
+
+    fetch(`/api/watch?episodeId=${encodeURIComponent(episodeSlug)}&servers=true`)
+      .then((res) => res.json())
+      .then((data) => {
+        if (cancelled) return;
+        if (data.servers && data.servers.length > 0) {
+          setServers(data.servers);
+        }
+      })
+      .catch((err) => console.error("Failed to fetch servers:", err))
+      .finally(() => {
+        if (!cancelled) setIsLoading(false);
+      });
+
+    return () => { cancelled = true; };
+  }, [episodeSlug, initialServers, servers.length]);
 
   // Extract direct stream URL from embed when server changes
   useEffect(() => {
@@ -215,6 +225,7 @@ export default function WatchPlayer({
     const embedUrl = currentServer.iframeUrl;
     if (!embedUrl) return;
 
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setIsExtracting(true);
     fetch(`/api/extract-stream?embedUrl=${encodeURIComponent(embedUrl)}`)
       .then((res) => res.json())
@@ -252,9 +263,19 @@ export default function WatchPlayer({
     return (
       <div className="player-error glass-panel">
         <svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.5" className="error-icon">
-          <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+          <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 10.5l4.72-4.72a.75.75 0 011.28.53v11.38a.75.75 0 01-1.28.53l-4.72-4.72M4.5 18.75h9a2.25 2.25 0 002.25-2.25v-9A2.25 2.25 0 0013.5 5.25h-9A2.25 2.25 0 002.25 7.5v9A2.25 2.25 0 004.5 18.75z" />
         </svg>
-        <p>Streaming sources could not be loaded for this episode.</p>
+        <p style={{ fontWeight: 600, marginBottom: 6 }}>No streaming source found</p>
+        <p style={{ opacity: 0.7, fontSize: "0.85rem", marginBottom: 16 }}>
+          The provider could not load servers for this episode. This usually resolves on retry.
+        </p>
+        <button
+          className="glow-btn-secondary"
+          style={{ fontSize: "0.85rem" }}
+          onClick={() => window.location.reload()}
+        >
+          Retry
+        </button>
       </div>
     );
   }
@@ -278,12 +299,17 @@ export default function WatchPlayer({
         </div>
       ) : directStream && playerMode !== "iframe" ? (
         <VideoPlayer
-          key={directStream.directUrl}
+          key={`${currentServer?.name || "Direct"}-${currentServer?.category || "sub"}-${directStream.directUrl}`}
           directUrl={directStream.directUrl}
           qualities={directStream.qualities}
           type={directStream.type}
           thumbnailUrl={directStream.thumbnailUrl}
           onEnded={handleEpisodeEnded}
+          onStreamFailed={() => {
+            console.warn("[WatchPlayer] HLS stream failed \u2014 falling back to iframe player");
+            setPlayerMode("iframe");
+            setDirectStream(null);
+          }}
           nextEpisodeSlug={nextEpisodeSlug}
           animeId={animeId}
           malId={malId}
@@ -297,8 +323,8 @@ export default function WatchPlayer({
         />
       ) : (
         <VideoPlayer
-          key={currentServer.iframeUrl}
-          src={currentServer.iframeUrl}
+          key={`${currentServer?.name || "Embed"}-${currentServer?.category || "sub"}-${currentServer?.iframeUrl || ""}`}
+          src={currentServer?.iframeUrl}
           type={currentServer.sourceType}
           onEnded={handleEpisodeEnded}
           nextEpisodeSlug={nextEpisodeSlug}

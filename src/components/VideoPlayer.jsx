@@ -16,6 +16,7 @@ export default function VideoPlayer({
   thumbnailUrl,
   qualities,
   onEnded,
+  onStreamFailed,
   nextEpisodeSlug,
   // Watch history props:
   animeId,
@@ -34,10 +35,9 @@ export default function VideoPlayer({
   const progressTimerRef = useRef(null);
   const iframeRef = useRef(null);
 
-  // Hard-stop video/audio on unmount
+  // Hard-stop video on unmount (iframe cleanup is handled by React via key-based remount)
   useEffect(() => {
     const video = videoRef.current;
-    const iframe = iframeRef.current;
     return () => {
       try {
         if (video) {
@@ -47,13 +47,6 @@ export default function VideoPlayer({
         }
       } catch (e) {
         console.warn("Failed to clean up video element:", e);
-      }
-      try {
-        if (iframe) {
-          iframe.src = "about:blank";
-        }
-      } catch (e) {
-        console.warn("Failed to clean up iframe element:", e);
       }
     };
   }, []);
@@ -82,28 +75,45 @@ export default function VideoPlayer({
   const [prevEpisodeId, setPrevEpisodeId] = useState(episodeId);
   const hasPrefetchedRef = useRef(false);
   const [isStopped, setIsStopped] = useState(false);
+  const pathname = usePathname();
+  const [initialPathname, setInitialPathname] = useState(pathname);
 
   if (episodeId !== prevEpisodeId) {
     setPrevEpisodeId(episodeId);
     setSkipTimes(null);
     setActiveSkip(null);
-    hasPrefetchedRef.current = false;
     setIsStopped(false);
+    setInitialPathname(pathname);
   }
 
-  const pathname = usePathname();
-  const [initialPathname] = useState(pathname);
+  useEffect(() => {
+    hasPrefetchedRef.current = false;
+  }, [episodeId]);
+
+  // Reset isStopped when the iframe src changes (episode navigation)
+  const isFirstSrcRender = useRef(true);
+  useEffect(() => {
+    if (isFirstSrcRender.current) {
+      isFirstSrcRender.current = false;
+      return;
+    }
+    if (src) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setIsStopped(false);
+    }
+  }, [src]);
 
   useEffect(() => {
-    if (pathname !== initialPathname) {
-      setIsStopped(true);
+    if (pathname !== initialPathname && !pathname.startsWith("/watch/")) {
+      setTimeout(() => {
+        setIsStopped(true);
+      }, 0);
     }
   }, [pathname, initialPathname]);
 
   useEffect(() => {
     if (isStopped) {
       const video = videoRef.current;
-      const iframe = iframeRef.current;
       try {
         if (video) {
           video.pause();
@@ -113,13 +123,10 @@ export default function VideoPlayer({
       } catch (e) {
         console.warn("Failed to pause video on stop:", e);
       }
-      try {
-        if (iframe) {
-          iframe.src = "about:blank";
-        }
-      } catch (e) {
-        console.warn("Failed to clean up iframe on stop:", e);
-      }
+      // Note: iframe cleanup is handled declaratively via React's conditional
+      // rendering (src={isStopped ? "about:blank" : src}) — no direct DOM
+      // mutation needed. Direct mutation caused state mismatch where React
+      // wouldn't re-set the src when isStopped toggled back to false.
     }
   }, [isStopped]);
 
@@ -141,11 +148,19 @@ export default function VideoPlayer({
       try {
         const currentUrl = window.location.pathname + window.location.search;
         const targetUrl = new URL(href, window.location.origin);
-        if (targetUrl.origin === window.location.origin && targetUrl.pathname + targetUrl.search !== currentUrl) {
+        if (
+          targetUrl.origin === window.location.origin &&
+          targetUrl.pathname + targetUrl.search !== currentUrl &&
+          !targetUrl.pathname.startsWith("/watch/")
+        ) {
           setIsStopped(true);
         }
       } catch (err) {
-        if (href.startsWith("/") && href !== window.location.pathname + window.location.search) {
+        if (
+          href.startsWith("/") &&
+          href !== window.location.pathname + window.location.search &&
+          !href.startsWith("/watch/")
+        ) {
           setIsStopped(true);
         }
       }
@@ -168,7 +183,10 @@ export default function VideoPlayer({
     };
 
     const handlePopState = () => {
-      setIsStopped(true);
+      // Only stop if navigating away from a watch page
+      if (!window.location.pathname.startsWith("/watch/")) {
+        setIsStopped(true);
+      }
     };
 
     document.addEventListener("click", handleGlobalClick, { capture: true });
@@ -297,6 +315,19 @@ export default function VideoPlayer({
     });
   }, [animeId, animeTitle, animeCover, episodeId, episodeNumber, episodeTitle, language]);
 
+  // Stable refs so event listeners (attached once) always call the latest version
+  // without needing to be torn down and re-added every time these values change.
+  const saveProgressRef = useRef(saveProgress);
+  const skipTimesRef = useRef(skipTimes);
+
+  useEffect(() => {
+    saveProgressRef.current = saveProgress;
+  }, [saveProgress]);
+
+  useEffect(() => {
+    skipTimesRef.current = skipTimes;
+  }, [skipTimes]);
+
   // Check for saved progress on mount
   useEffect(() => {
     if (!episodeId || !language) return;
@@ -347,57 +378,103 @@ export default function VideoPlayer({
     const hasResume = saved && saved.timestamp > 10 && !saved.completed;
 
     if (Hls.isSupported()) {
-      const hls = new Hls({
-        maxBufferLength: 30,
-        maxMaxBufferLength: 60,
-        maxBufferSize: 60 * 1024 * 1024, // 60MB max buffer capacity
-        enableWorker: true,
-        lowLatencyMode: true,
-      });
-      hlsRef.current = hls;
-      hls.loadSource(directUrl);
-      hls.attachMedia(video);
+      let retryCount = 0;
+      const MAX_RETRIES = 2;
+      let manifestLoaded = false;
 
-      hls.on(Hls.Events.MANIFEST_PARSED, (_, data) => {
-        // Extract quality levels from HLS manifest
-        const levels = data.levels.map((level, idx) => ({
-          url: "",
-          label: `${level.height}p`,
-          height: level.height,
-          index: idx,
-        }));
-        
-        const nextQualities = [{ label: "Auto", index: -1 }, ...levels];
-        setAvailableQualities(nextQualities);
+      // Safety timeout: if the manifest hasn't loaded in 12s, the stream is dead.
+      // Fire onStreamFailed so WatchPlayer can fall back to iframe mode.
+      const manifestTimeout = setTimeout(() => {
+        if (!manifestLoaded) {
+          console.warn("[HLS] Manifest load timeout — stream unreachable, triggering fallback");
+          hlsRef.current?.destroy();
+          hlsRef.current = null;
+          onStreamFailed?.();
+        }
+      }, 12000);
 
-        // Retrieve preferred quality
-        let preferred = "Auto";
-        if (typeof window !== "undefined") {
-          preferred = localStorage.getItem("hulix-preferred-quality") || "Auto";
-        }
-        
-        const matchedLevel = nextQualities.find((q) => q.label === preferred);
-        if (matchedLevel) {
-          hls.currentLevel = matchedLevel.index;
-          setCurrentQuality(matchedLevel.index);
-        } else {
-          hls.currentLevel = -1;
-          setCurrentQuality(-1);
-        }
+      const createHls = () => {
+        const hls = new Hls({
+          maxBufferLength: 30,
+          maxMaxBufferLength: 60,
+          maxBufferSize: 60 * 1024 * 1024, // 60MB max buffer capacity
+          enableWorker: true,
+          lowLatencyMode: false,  // must be false for proxied VOD streams — true causes aggressive prefetch that stalls
+          fragLoadingTimeOut: 20000,
+          manifestLoadingTimeOut: 15000,
+          levelLoadingTimeOut: 15000,
+        });
+        hlsRef.current = hls;
+        hls.loadSource(directUrl);
+        hls.attachMedia(video);
 
-        if (!hasResume) {
-          video.play().catch(() => {});
-        }
-      });
+        hls.on(Hls.Events.MANIFEST_PARSED, (_, data) => {
+          manifestLoaded = true;
+          clearTimeout(manifestTimeout);
 
-      hls.on(Hls.Events.ERROR, (_, data) => {
-        if (data.fatal) {
-          if (data.type === Hls.ErrorTypes.NETWORK_ERROR) hls.startLoad();
-          else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) hls.recoverMediaError();
-        }
-      });
+          // Extract quality levels from HLS manifest
+          const levels = data.levels.map((level, idx) => ({
+            url: "",
+            label: `${level.height}p`,
+            height: level.height,
+            index: idx,
+          }));
+
+          const nextQualities = [{ label: "Auto", index: -1 }, ...levels];
+          setAvailableQualities(nextQualities);
+
+          // Retrieve preferred quality
+          let preferred = "Auto";
+          if (typeof window !== "undefined") {
+            preferred = localStorage.getItem("hulix-preferred-quality") || "Auto";
+          }
+
+          const matchedLevel = nextQualities.find((q) => q.label === preferred);
+          if (matchedLevel) {
+            hls.currentLevel = matchedLevel.index;
+            setCurrentQuality(matchedLevel.index);
+          } else {
+            hls.currentLevel = -1;
+            setCurrentQuality(-1);
+          }
+
+          if (!hasResume) {
+            video.play().catch(() => {});
+          }
+        });
+
+        hls.on(Hls.Events.ERROR, (_, data) => {
+          if (!data.fatal) return;
+          console.warn(`[HLS] Fatal error type=${data.type} retryCount=${retryCount}`);
+          if (retryCount < MAX_RETRIES) {
+            retryCount++;
+            // Destroy current instance and recreate — more reliable than just startLoad()
+            hls.destroy();
+            hlsRef.current = null;
+            setTimeout(() => {
+              if (videoRef.current) createHls();
+            }, 1500 * retryCount);
+          } else {
+            clearTimeout(manifestTimeout);
+            // All retries exhausted — fall back to iframe
+            hls.destroy();
+            hlsRef.current = null;
+            if (!manifestLoaded) {
+              onStreamFailed?.();
+            } else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
+              // Media error after manifest loaded — try soft recovery
+              hls.recoverMediaError();
+            }
+          }
+        });
+
+        return hls;
+      };
+
+      const hls = createHls();
 
       return () => {
+        clearTimeout(manifestTimeout);
         hls.destroy();
         hlsRef.current = null;
       };
@@ -407,7 +484,7 @@ export default function VideoPlayer({
         video.play().catch(() => {});
       }
     }
-  }, [directUrl, isHls, useNativePlayer, episodeId, language]);
+  }, [directUrl, isHls, useNativePlayer, episodeId, language, onStreamFailed]);
 
   // --- Direct MP4 Setup ---
   useEffect(() => {
@@ -425,6 +502,9 @@ export default function VideoPlayer({
   }, [directUrl, isHls, useNativePlayer, episodeId, language]);
 
   // --- Video Event Listeners ---
+  // Listeners are attached ONCE (dep: useNativePlayer only) and read latest
+  // saveProgress / skipTimes / autoNext / onEnded via stable refs to avoid
+  // tearing down and re-adding all listeners every time those values change.
   useEffect(() => {
     if (!useNativePlayer) return;
     const video = videoRef.current;
@@ -433,7 +513,7 @@ export default function VideoPlayer({
     const handlePlay = () => {
       setIsPlaying(true);
       if (progressTimerRef.current) clearInterval(progressTimerRef.current);
-      progressTimerRef.current = setInterval(saveProgress, 5000);
+      progressTimerRef.current = setInterval(() => saveProgressRef.current?.(), 5000);
     };
     const handlePause = () => {
       setIsPlaying(false);
@@ -441,7 +521,7 @@ export default function VideoPlayer({
         clearInterval(progressTimerRef.current);
         progressTimerRef.current = null;
       }
-      saveProgress();
+      saveProgressRef.current?.();
     };
     const handleLoadedMeta = () => setDuration(video.duration);
     const handleTimeUpdate = () => {
@@ -450,7 +530,7 @@ export default function VideoPlayer({
       if (video.buffered.length > 0) {
         setBuffered(video.buffered.end(video.buffered.length - 1));
       }
-      
+
       // If the player is currently seeking, do not check/update skip segments to avoid flicker
       if (video?.seeking) return;
       // Prefetch next episode if progress > 85%
@@ -459,9 +539,10 @@ export default function VideoPlayer({
         console.log(`[VideoPlayer] Prefetching next episode stream data: ${nextEpisodeSlug}`);
         fetch(`/api/watch?episodeId=${encodeURIComponent(nextEpisodeSlug)}&servers=true`).catch(() => {});
       }
-      // Update active skip button
-      if (skipTimes) {
-        const { intro, outro } = skipTimes;
+      // Update active skip button via ref (avoids re-attaching listener when skipTimes loads)
+      const st = skipTimesRef.current;
+      if (st) {
+        const { intro, outro } = st;
         if (intro && t >= intro.start && t < intro.end) {
           setActiveSkip("intro");
         } else if (outro && t >= outro.start && t < outro.end) {
@@ -474,7 +555,7 @@ export default function VideoPlayer({
     const handleWaiting = () => setIsLoading(true);
     const handleCanPlay = () => setIsLoading(false);
     const handleEnded = () => {
-      saveProgress();
+      saveProgressRef.current?.();
       if (autoNextRef.current && onEndedRef.current) {
         setIsStopped(true);
         onEndedRef.current();
@@ -490,7 +571,7 @@ export default function VideoPlayer({
     video.addEventListener("ended", handleEnded);
 
     return () => {
-      saveProgress();
+      saveProgressRef.current?.();
       if (progressTimerRef.current) clearInterval(progressTimerRef.current);
       video.removeEventListener("play", handlePlay);
       video.removeEventListener("pause", handlePause);
@@ -500,7 +581,8 @@ export default function VideoPlayer({
       video.removeEventListener("canplay", handleCanPlay);
       video.removeEventListener("ended", handleEnded);
     };
-  }, [useNativePlayer, saveProgress, skipTimes]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [useNativePlayer]);
 
   const resetTimer = useCallback(() => {
     setShowControls(true);
@@ -1009,6 +1091,23 @@ export default function VideoPlayer({
     );
   }
 
+  // Compute the effective iframe src — memoised to use as key
+  const effectiveIframeSrc = isStopped ? "about:blank" : src;
+
+  // Safety net: after mount / src change, explicitly assign src to the iframe
+  // via the ref. This covers edge cases where React's `setAttribute("src", ...)`
+  // during reconciliation doesn't trigger the browser to navigate the iframe
+  // (observed during Next.js client-side RSC transitions).
+  useEffect(() => {
+    const iframe = iframeRef.current;
+    if (iframe && effectiveIframeSrc && effectiveIframeSrc !== "about:blank") {
+      // Only force-assign if the DOM src doesn't already match
+      if (iframe.src !== effectiveIframeSrc) {
+        iframe.src = effectiveIframeSrc;
+      }
+    }
+  }, [effectiveIframeSrc]);
+
   // --- RENDER: Iframe fallback ---
   return (
     <div className="video-player-container glass-panel" style={{ position: 'relative' }}>
@@ -1033,8 +1132,9 @@ export default function VideoPlayer({
       )}
       <div className="iframe-wrapper">
         <iframe
+          key={effectiveIframeSrc}
           ref={iframeRef}
-          src={isStopped ? "about:blank" : src}
+          src={effectiveIframeSrc}
           className="player-iframe"
           allowFullScreen
           allow="autoplay; fullscreen; encrypted-media; picture-in-picture"

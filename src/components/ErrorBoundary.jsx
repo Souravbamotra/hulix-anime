@@ -29,7 +29,9 @@ export default class ErrorBoundary extends Component {
   }
 
   handleRetry = () => {
-    this.setState({ hasError: false, error: null });
+    // For Server Component children, resetting state alone won't re-run the server fetch.
+    // A full page reload is the only way to actually retry the scrape.
+    window.location.reload();
   };
 
   render() {

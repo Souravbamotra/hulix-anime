@@ -39,7 +39,7 @@ export default function HeroCarousel({ animeList }) {
       setActiveIndex((prevIndex) => (prevIndex + 1) % animeList.length);
     }, 6000); // Change slide every 6s
     return () => clearInterval(timer);
-  }, [animeList]);
+  }, [animeList.length]);
 
   if (!animeList || animeList.length === 0) return null;
 

@@ -3,6 +3,7 @@ import Link from "next/link";
 import Image from "next/image";
 import Navbar from "@/components/Navbar";
 import WatchPlayer from "@/components/WatchPlayer";
+import BackToDetailsButton from "@/components/BackToDetailsButton";
 import EpisodesList from "@/components/EpisodesList";
 import ErrorBoundary from "@/components/ErrorBoundary";
 import { getAnimeDetails } from "@/lib/anilist";
@@ -242,6 +243,7 @@ async function WatchPlayerSection({ media, episodeId, fillerList }) {
 
   return (
     <WatchPlayer
+      key={episodeId}
       initialServers={serverData?.servers || []}
       episodeSlug={episodeId}
       nextEpisodeSlug={nextEp?.slug}
@@ -328,12 +330,12 @@ async function WatchContent({ params, searchParams }) {
     <main className="main-container watch-main">
       {/* Breadcrumb / Title Info */}
       <div className="watch-header">
-        <Link href={`/anime/${media.id}`} className="back-link">
+        <BackToDetailsButton animeId={media.id}>
           <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5">
             <path strokeLinecap="round" strokeLinejoin="round" d="M15 19l-7-7 7-7" />
           </svg>
           Back to Details
-        </Link>
+        </BackToDetailsButton>
         <h1 className="watch-title-text">
           {displayTitle} <span className="ep-label-highlight">— {epLabel}</span>
         </h1>

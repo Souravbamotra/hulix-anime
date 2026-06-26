@@ -27,6 +27,13 @@ const ALLOWED_EMBED_HOSTS = new Set([
   "24stream.xyz",
   "vibeplayer.site",
   "gogoanimes.cv",
+  "groovy.monster",
+  "9anime.org.lv",
+  "rareanimes.mov",
+  "www.rareanimes.mov",
+  "toonstream.vip",
+  "ibyteimg.com",
+  "tiktokv.com",
 ]);
 
 function isAllowedEmbedHost(hostname) {
@@ -36,6 +43,20 @@ function isAllowedEmbedHost(hostname) {
     if (ALLOWED_EMBED_HOSTS.has(parts.slice(i).join("."))) return true;
   }
   return false;
+}
+
+function registerDynamicAllowedHost(urlStr) {
+  if (!urlStr) return;
+  try {
+    const url = new URL(urlStr);
+    if (!global.dynamicAllowedHosts) {
+      global.dynamicAllowedHosts = new Set();
+    }
+    global.dynamicAllowedHosts.add(url.hostname);
+    console.log(`[Proxy] Registered dynamic allowed host: ${url.hostname}`);
+  } catch (e) {
+    // Ignore invalid URLs
+  }
 }
 
 export async function GET(request) {
@@ -83,6 +104,8 @@ export async function GET(request) {
         directUrl: `${proxyBase}${encodeURIComponent(result.directUrl)}`
       };
 
+      registerDynamicAllowedHost(result.directUrl);
+
       return NextResponse.json(proxiedResult, { headers: cacheHeaders });
     } catch (err) {
       return NextResponse.json({ error: err.message || "Failed to extract stream" }, { status: 500 });
@@ -110,6 +133,11 @@ export async function GET(request) {
           ...q,
           url: `${proxyBase}${encodeURIComponent(q.url)}`
         }));
+      }
+
+      registerDynamicAllowedHost(result.directUrl);
+      if (result.qualities) {
+        result.qualities.forEach(q => registerDynamicAllowedHost(q.url));
       }
 
       return NextResponse.json(proxiedResult, { headers: cacheHeaders });
@@ -146,6 +174,8 @@ export async function GET(request) {
       const thumbnailUrl = imageMatch ? imageMatch[1] : "";
       const type = directUrl.includes(".m3u8") ? "hls" : "mp4";
 
+      registerDynamicAllowedHost(directUrl);
+
       return NextResponse.json({
         directUrl,
         thumbnailUrl,
@@ -168,6 +198,7 @@ export async function GET(request) {
           label: match[2] || "Default",
           type: match[3] || (match[1].includes(".m3u8") ? "hls" : "mp4"),
         });
+        registerDynamicAllowedHost(match[1]);
       }
 
       if (sources.length > 0) {

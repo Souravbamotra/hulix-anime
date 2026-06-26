@@ -8,6 +8,7 @@ import EpisodesList from "@/components/EpisodesList";
 import AnimeDescription from "@/components/AnimeDescription";
 import WatchlistButton from "@/components/WatchlistButton";
 import { fetchFillerList, getFillerSlug } from "@/lib/filler";
+import { getAniListSeasonNum } from "@/lib/mappings";
 
 export const unstable_instant = {
   prefetch: 'runtime',
@@ -80,6 +81,19 @@ async function EpisodeListSection({ media }) {
     
     subEpisodes = gogoSubRes;
     engDubEpisodes = gogoDubRes;
+
+    const targetSeason = getAniListSeasonNum(media.title.romaji) || 
+                         getAniListSeasonNum(media.title.english) || 
+                         1;
+    
+    // Filter ToonStream episodes if they contain multiple seasons, mapping to the target season
+    let resolvedToonRes = toonRes;
+    const toonSeasons = [...new Set(toonRes.map(ep => ep.season || 1))];
+    if (toonSeasons.length > 1) {
+      console.log(`[Details Page] ToonStream returned multiple seasons: ${toonSeasons}. Filtering to target season: ${targetSeason}`);
+      resolvedToonRes = toonRes.filter(ep => (ep.season || 1) === targetSeason)
+                               .map((ep, idx) => ({ ...ep, number: idx + 1 }));
+    }
     
     // Choose the provider that has more Hindi Dub episodes, but override for One Piece
     const cleanRomaji = (media.title.romaji || "").toLowerCase();
@@ -91,11 +105,11 @@ async function EpisodeListSection({ media }) {
       if (rareRes.length > 0) {
         hindiDubEpisodes = rareRes;
       } else {
-        hindiDubEpisodes = toonRes;
+        hindiDubEpisodes = resolvedToonRes;
       }
-    } else if (toonRes.length > rareRes.length) {
-      console.log(`[Details Page] ToonStream has more Hindi Dub episodes (${toonRes.length}) than RareAnimes (${rareRes.length}). Using ToonStream.`);
-      hindiDubEpisodes = toonRes;
+    } else if (resolvedToonRes.length > rareRes.length) {
+      console.log(`[Details Page] ToonStream has more Hindi Dub episodes (${resolvedToonRes.length}) than RareAnimes (${rareRes.length}). Using ToonStream.`);
+      hindiDubEpisodes = resolvedToonRes;
     } else {
       console.log(`[Details Page] Using RareAnimes Hindi Dub episodes (${rareRes.length})`);
       hindiDubEpisodes = rareRes;

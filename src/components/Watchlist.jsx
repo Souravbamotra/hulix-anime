@@ -18,8 +18,10 @@ export default function Watchlist() {
   const refresh = () => setList(getRawWatchlist());
 
   useEffect(() => {
-    setMounted(true);
-    refresh();
+    setTimeout(() => {
+      setMounted(true);
+      refresh();
+    }, 0);
     window.addEventListener("hulix_watchlist_changed", refresh);
     return () => window.removeEventListener("hulix_watchlist_changed", refresh);
   }, []);

@@ -42,7 +42,7 @@ export default function ContinueWatching() {
       <div className="continue-watching-row scrollbar-hide">
         {entries.map((entry) => (
           <div key={`${entry.episodeId}-${entry.language}`} className="continue-watching-card-wrapper group">
-            <Link href={`/watch/${encodeURIComponent(entry.episodeId)}?animeId=${entry.animeId}`} className="continue-watching-card-link">
+            <Link href={`/watch/${entry.episodeId}?animeId=${entry.animeId}`} className="continue-watching-card-link">
               <div className="continue-watching-card">
                 <div className="card-thumbnail-wrapper">
                   {entry.animeCover ? (

@@ -34,8 +34,10 @@ export default function WatchlistButton({
 
   // Hydrate from localStorage after mount (avoids SSR mismatch)
   useEffect(() => {
-    setMounted(true);
-    setInList(isInWatchlist(animeId));
+    setTimeout(() => {
+      setMounted(true);
+      setInList(isInWatchlist(animeId));
+    }, 0);
 
     const sync = () => setInList(isInWatchlist(animeId));
     window.addEventListener("hulix_watchlist_changed", sync);

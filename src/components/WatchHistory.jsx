@@ -16,6 +16,8 @@ export default function WatchHistory() {
   const [filter, setFilter] = useState("all");
   const [mounted, setMounted] = useState(false);
 
+  const [showClearConfirm, setShowClearConfirm] = useState(false);
+
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setMounted(true);
@@ -28,10 +30,13 @@ export default function WatchHistory() {
   };
 
   const handleClearAll = () => {
-    if (confirm("Clear all watch history? This cannot be undone.")) {
-      clearWatchHistory();
-      setHistory([]);
-    }
+    setShowClearConfirm(true);
+  };
+
+  const confirmClearAll = () => {
+    clearWatchHistory();
+    setHistory([]);
+    setShowClearConfirm(false);
   };
 
   if (!mounted) return null;
@@ -92,7 +97,7 @@ export default function WatchHistory() {
               className="watch-history-item glass-card group"
             >
               {/* Thumbnail */}
-              <Link href={`/watch/${encodeURIComponent(entry.episodeId)}?animeId=${entry.animeId}`} className="history-thumbnail-link">
+              <Link href={`/watch/${entry.episodeId}?animeId=${entry.animeId}`} className="history-thumbnail-link">
                 <div className="history-thumbnail-wrapper">
                   {entry.animeCover ? (
                     <Image
@@ -162,6 +167,32 @@ export default function WatchHistory() {
               </button>
             </div>
           ))}
+        </div>
+      )}
+
+      {/* Custom Confirmation Modal */}
+      {showClearConfirm && (
+        <div className="custom-modal-overlay">
+          <div className="custom-modal-content glass-panel">
+            <h3 className="custom-modal-title">Clear Watch History</h3>
+            <p className="custom-modal-message">
+              Are you sure you want to clear your entire watch history? This action cannot be undone.
+            </p>
+            <div className="custom-modal-actions">
+              <button
+                className="glow-btn-secondary cancel-btn"
+                onClick={() => setShowClearConfirm(false)}
+              >
+                Cancel
+              </button>
+              <button
+                className="glow-btn confirm-btn"
+                onClick={confirmClearAll}
+              >
+                Clear All
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>

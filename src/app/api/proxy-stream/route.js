@@ -14,9 +14,12 @@ const ALLOWED_HOSTS = new Set([
   "argon.razorshell.space",
   "razorshell.space",
   "anidap.se",
+  "chad.anidap.se",
   // 24stream / megaplay / vibeplayer embeds
   "24stream.xyz",
   "megaplay.su",
+  "megaplay.buzz",
+  "mewstream.buzz",
   "vibeplayer.site",
   // codedew / streambeta / multiquality
   "codedew.com",
@@ -24,6 +27,13 @@ const ALLOWED_HOSTS = new Set([
   "multiquality.net",
   // gogoanimes CDN
   "gogoanimes.cv",
+  // WatchMultiQuality CDN
+  "groovy.monster",
+  // Project Scrapers & main domains
+  "9anime.org.lv",
+  "rareanimes.mov",
+  "www.rareanimes.mov",
+  "toonstream.vip",
 ]);
 
 /**
@@ -32,10 +42,14 @@ const ALLOWED_HOSTS = new Set([
  */
 function isAllowedHost(hostname) {
   if (ALLOWED_HOSTS.has(hostname)) return true;
+  if (global.dynamicAllowedHosts && global.dynamicAllowedHosts.has(hostname)) return true;
+
   // Walk up sub-domain levels: "a.b.c" → check "b.c" → check "c"
   const parts = hostname.split(".");
   for (let i = 1; i < parts.length - 1; i++) {
-    if (ALLOWED_HOSTS.has(parts.slice(i).join("."))) return true;
+    const parent = parts.slice(i).join(".");
+    if (ALLOWED_HOSTS.has(parent)) return true;
+    if (global.dynamicAllowedHosts && global.dynamicAllowedHosts.has(parent)) return true;
   }
   return false;
 }
@@ -72,7 +86,25 @@ export async function GET(request) {
     let referer = "https://argon.razorshell.space/";
     let originHeader = undefined;
 
-    if (url.includes("24stream.xyz") || url.includes("megaplay") || url.includes("vibeplayer.site")) {
+    if (url.includes("24stream.xyz") || url.includes("mewstream.buzz")) {
+      // The 24stream CDN validates that Origin matches the ?origin= query param.
+      // Read it from the URL itself so it always matches what the CDN expects.
+      try {
+        const parsed = new URL(url);
+        const originParam = parsed.searchParams.get("origin");
+        if (originParam) {
+          const originParsed = new URL(originParam);
+          referer = `${originParsed.origin}/`;
+          originHeader = originParsed.origin;
+        } else {
+          referer = "https://megaplay.buzz/";
+          originHeader = "https://megaplay.buzz";
+        }
+      } catch {
+        referer = "https://megaplay.buzz/";
+        originHeader = "https://megaplay.buzz";
+      }
+    } else if (url.includes("megaplay") || url.includes("vibeplayer.site")) {
       referer = "https://anidap.se/";
       originHeader = "https://anidap.se";
     }
