@@ -1900,8 +1900,7 @@ export async function extractAnidapStream(embedUrl) {
       
       let data = null;
       const providers = ["beep", "neko", "mimi", "yuki"];
-      
-      for (const provider of providers) {
+      const providerPromises = providers.map(async (provider) => {
         try {
           const sourcesUrl = `https://chad.anidap.se/rest/api/sources?id=${slug}&epNum=${epNum}&type=${type}&providerId=${provider}`;
           const res = await fetch(sourcesUrl, {
@@ -1913,14 +1912,17 @@ export async function extractAnidapStream(embedUrl) {
           if (res.ok) {
             const json = await res.json();
             if (json.sources && json.sources.length > 0) {
-              data = json;
-              break;
+              return json;
             }
           }
         } catch (e) {
           console.warn(`[AniDap] Failed to fetch sources for provider ${provider}:`, e.message);
         }
-      }
+        return null;
+      });
+
+      const results = await Promise.all(providerPromises);
+      data = results.find(Boolean);
       
       if (!data) {
         throw new Error("No sources found in AniDap API response across all providers");

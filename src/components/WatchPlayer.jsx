@@ -237,16 +237,10 @@ export default function WatchPlayer({
           setDirectStream(data);
         } else {
           setDirectStream(null);
-          if (isAnidap) {
-            setPlayerMode("iframe");
-          }
         }
       })
       .catch(() => {
         setDirectStream(null);
-        if (isAnidap) {
-          setPlayerMode("iframe");
-        }
       })
       .finally(() => setIsExtracting(false));
   }, [currentServer, playerMode, isAnidap]);
@@ -298,7 +292,10 @@ export default function WatchPlayer({
           <svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.5" className="error-icon">
             <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
           </svg>
-          <p>Failed to extract stream for AniDap. Custom player stream is unavailable.</p>
+          <p style={{ fontWeight: 600, marginBottom: 6 }}>Stream currently unavailable</p>
+          <p style={{ opacity: 0.7, fontSize: "0.85rem", maxWidth: "400px", margin: "0 auto" }}>
+            This episode might not be released or uploaded yet in this language. Please check back later.
+          </p>
         </div>
       ) : directStream && playerMode !== "iframe" ? (
         <VideoPlayer
@@ -309,8 +306,10 @@ export default function WatchPlayer({
           thumbnailUrl={directStream.thumbnailUrl}
           onEnded={handleEpisodeEnded}
           onStreamFailed={() => {
-            console.warn("[WatchPlayer] HLS stream failed \u2014 falling back to iframe player");
-            setPlayerMode("iframe");
+            console.warn("[WatchPlayer] HLS stream failed — falling back to iframe player");
+            if (!isAnidap) {
+              setPlayerMode("iframe");
+            }
             setDirectStream(null);
           }}
           nextEpisodeSlug={nextEpisodeSlug}
@@ -378,7 +377,7 @@ export default function WatchPlayer({
         )}
 
         {/* Player Mode Toggle */}
-        {!is9anime && !isToonstream && (
+        {!is9anime && !isToonstream && !isAnidap && (
           <div className="player-mode-toggle">
             <button
               className={`mode-btn ${playerMode !== "iframe" ? "active" : ""}`}
