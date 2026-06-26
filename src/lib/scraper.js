@@ -2021,6 +2021,23 @@ export async function findToonStreamSlug(aniListTitleRomaji, aniListTitleEnglish
 }
 
 async function findToonStreamSlugUncached(aniListTitleRomaji, aniListTitleEnglish, format = "", seasonYear = null) {
+  const cleanTitleRomaji = (aniListTitleRomaji || "").toLowerCase().trim();
+  const cleanTitleEnglish = (aniListTitleEnglish || "").toLowerCase().trim();
+
+  const isWistoria = 
+    cleanTitleRomaji.includes("wistoria") || 
+    cleanTitleEnglish.includes("wistoria") ||
+    cleanTitleRomaji.includes("tsue to tsurugi no") || 
+    cleanTitleEnglish.includes("wand and sword");
+
+  if (isWistoria) {
+    const seasonNum = getAniListSeasonNum(aniListTitleRomaji) || getAniListSeasonNum(aniListTitleEnglish) || 1;
+    if (seasonNum === 2) {
+      return null; // ToonStream has no separate Season 2 page, so use RareAnimes instead
+    }
+    return "series/wistoria-wand-and-sword"; // Season 1
+  }
+
   const searchQueries = getSearchQueries(aniListTitleRomaji, aniListTitleEnglish);
   
   for (const query of searchQueries) {
